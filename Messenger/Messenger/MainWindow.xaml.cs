@@ -10,6 +10,7 @@ namespace Messenger
     public partial class MainWindow : Window
     {
         private readonly MainViewModel _mainViewModel;
+        private bool _isInitialized = false;
 
         public MainWindow(MainViewModel mainViewModel)
         {
@@ -27,12 +28,15 @@ namespace Messenger
             // Загружаем начальное состояние
             Loaded += OnWindowLoaded;
             Closing += OnWindowClosing;
+            StateChanged += OnWindowStateChanged;
         }
 
         private void ConfigureNavigation()
         {
             // Устанавливаем обработчик навигации для Frame
             MainFrame.Navigated += OnFrameNavigated;
+            MainFrame.NavigationFailed += OnFrameNavigationFailed;
+            MainFrame.NavigationStopped += OnFrameNavigationStopped;
 
             // Отключаем стандартную навигацию
             MainFrame.NavigationUIVisibility = NavigationUIVisibility.Hidden;
@@ -43,27 +47,44 @@ namespace Messenger
 
         private void SubscribeToEvents()
         {
-            // Подписываемся на изменения CurrentViewModel
-            _mainViewModel.PropertyChanged += (sender, e) =>
+            // Подписываемся на изменения свойств MainViewModel
+            _mainViewModel.PropertyChanged += MainViewModel_PropertyChanged;
+        }
+
+        private void MainViewModel_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            Dispatcher.Invoke(() =>
             {
-                if (e.PropertyName == nameof(MainViewModel.CurrentViewModel))
+                switch (e.PropertyName)
                 {
-                    UpdateCurrentPage();
+                    case nameof(MainViewModel.CurrentViewModel):
+                        UpdateCurrentPage();
+                        break;
+
+                    case nameof(MainViewModel.IsBusy):
+                        UpdateBusyState();
+                        break;
+
+                    case nameof(MainViewModel.IsAuthenticated):
+                        UpdateNavigationVisibility();
+                        break;
+
+                    case nameof(MainViewModel.UnreadMessagesCount):
+                        UpdateUnreadCounter();
+                        break;
                 }
-                else if (e.PropertyName == nameof(MainViewModel.IsBusy))
-                {
-                    UpdateBusyState();
-                }
-            };
+            });
         }
 
         private void OnWindowLoaded(object sender, RoutedEventArgs e)
         {
+            // Восстанавливаем состояние окна
+            RestoreWindowState();
+
             // Устанавливаем начальную страницу
             UpdateCurrentPage();
 
-            // Восстанавливаем состояние окна
-            RestoreWindowState();
+            _isInitialized = true;
         }
 
         private void OnWindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -73,69 +94,105 @@ namespace Messenger
 
             // Обновляем статус пользователя на "не в сети"
             UpdateUserStatusOnClose();
+
+            // Отписываемся от событий
+            UnsubscribeFromEvents();
+        }
+
+        private void OnWindowStateChanged(object sender, EventArgs e)
+        {
+            // Обновляем видимость элементов в зависимости от состояния окна
+            UpdateWindowStateDependentElements();
+        }
+
+        private void UnsubscribeFromEvents()
+        {
+            _mainViewModel.PropertyChanged -= MainViewModel_PropertyChanged;
+            Loaded -= OnWindowLoaded;
+            Closing -= OnWindowClosing;
+            StateChanged -= OnWindowStateChanged;
+
+            MainFrame.Navigated -= OnFrameNavigated;
+            MainFrame.NavigationFailed -= OnFrameNavigationFailed;
+            MainFrame.NavigationStopped -= OnFrameNavigationStopped;
         }
 
         private void UpdateCurrentPage()
         {
-            if (_mainViewModel.CurrentViewModel == null)
+            if (!_isInitialized || _mainViewModel.CurrentViewModel == null)
                 return;
 
             var pageType = GetPageTypeForViewModel(_mainViewModel.CurrentViewModel);
             if (pageType != null)
             {
-                // Создаем страницу и устанавливаем DataContext
-                var page = (Page)Activator.CreateInstance(pageType);
-                page.DataContext = _mainViewModel.CurrentViewModel;
+                try
+                {
+                    // Создаем страницу и устанавливаем DataContext
+                    var page = (Page)Activator.CreateInstance(pageType);
+                    page.DataContext = _mainViewModel.CurrentViewModel;
 
-                // Применяем анимацию перехода
-                ApplyPageTransition(page);
+                    // Применяем анимацию перехода
+                    ApplyPageTransition(page);
+                }
+                catch (Exception ex)
+                {
+                    Utils.ErrorHandler.HandleException(ex, "UpdateCurrentPage");
+                    ShowErrorPage($"Не удалось загрузить страницу: {ex.Message}");
+                }
             }
         }
 
         private void ApplyPageTransition(Page page)
         {
-            // Сохраняем текущий контент для анимации
-            var oldContent = MainFrame.Content as UIElement;
-
-            // Устанавливаем новую страницу
-            MainFrame.Navigate(page);
-
-            // Если была предыдущая страница, анимируем переход
-            if (oldContent != null)
+            try
             {
-                // Создаем анимацию исчезновения старой страницы
-                var fadeOutAnimation = new DoubleAnimation
+                // Если Frame пустой, просто устанавливаем страницу
+                if (MainFrame.Content == null)
                 {
-                    From = 1.0,
-                    To = 0.0,
-                    Duration = TimeSpan.FromSeconds(0.2)
-                };
+                    MainFrame.Navigate(page);
+                    return;
+                }
 
-                fadeOutAnimation.Completed += (s, e) =>
+                // Сохраняем текущий контент для анимации
+                var oldContent = MainFrame.Content as UIElement;
+
+                // Создаем анимацию перехода
+                var transition = new DoubleAnimationUsingKeyFrames();
+                transition.KeyFrames.Add(new LinearDoubleKeyFrame(1.0, TimeSpan.FromSeconds(0)));
+                transition.KeyFrames.Add(new LinearDoubleKeyFrame(0.0, TimeSpan.FromSeconds(0.2)));
+
+                transition.Completed += (s, e) =>
                 {
-                    // После исчезновения старой страницы анимируем появление новой
+                    // Устанавливаем новую страницу
+                    MainFrame.Navigate(page);
+
+                    // Анимируем появление новой страницы
                     if (MainFrame.Content is UIElement newContent)
                     {
-                        var fadeInAnimation = new DoubleAnimation
+                        var fadeIn = new DoubleAnimation
                         {
                             From = 0.0,
                             To = 1.0,
                             Duration = TimeSpan.FromSeconds(0.3)
                         };
-
-                        newContent.BeginAnimation(UIElement.OpacityProperty, fadeInAnimation);
+                        newContent.BeginAnimation(UIElement.OpacityProperty, fadeIn);
                     }
                 };
 
-                oldContent.BeginAnimation(UIElement.OpacityProperty, fadeOutAnimation);
-            }
-            else
-            {
-                // Если это первая страница, просто делаем ее видимой
-                if (MainFrame.Content is UIElement newContent)
+                // Запускаем анимацию исчезновения
+                if (oldContent != null)
                 {
-                    newContent.Opacity = 1.0;
+                    oldContent.BeginAnimation(UIElement.OpacityProperty, transition);
                 }
+                else
+                {
+                    MainFrame.Navigate(page);
+                }
+            }
+            catch (Exception ex)
+            {
+                Utils.ErrorHandler.LogException(ex, "ApplyPageTransition");
+                MainFrame.Navigate(page);
             }
         }
 
@@ -166,6 +223,84 @@ namespace Messenger
 
             // Обновляем заголовок окна
             UpdateWindowTitle();
+
+            // Обновляем состояние навигационных кнопок
+            UpdateNavigationButtonsState();
+        }
+
+        private void OnFrameNavigationFailed(object sender, NavigationFailedEventArgs e)
+        {
+            Utils.ErrorHandler.HandleException(e.Exception, "Frame Navigation Failed");
+            e.Handled = true;
+
+            ShowErrorPage($"Ошибка навигации: {e.Exception.Message}");
+        }
+
+        private void OnFrameNavigationStopped(object sender, NavigationEventArgs e)
+        {
+            // Логируем остановку навигации
+            Utils.ErrorHandler.LogException(new Exception("Navigation stopped by user or system"), "Frame Navigation");
+        }
+
+        private void ShowErrorPage(string errorMessage)
+        {
+            try
+            {
+                var errorPage = new Page();
+                var stackPanel = new StackPanel
+                {
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = "😞",
+                    FontSize = 48,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 0, 0, 20)
+                });
+
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = "Произошла ошибка",
+                    FontSize = 24,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Margin = new Thickness(0, 0, 0, 10)
+                });
+
+                stackPanel.Children.Add(new TextBlock
+                {
+                    Text = errorMessage,
+                    FontSize = 14,
+                    Foreground = System.Windows.Media.Brushes.LightGray,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxWidth = 400,
+                    TextAlignment = TextAlignment.Center
+                });
+
+                var retryButton = new Button
+                {
+                    Content = "Повторить",
+                    Margin = new Thickness(0, 20, 0, 0),
+                    Padding = new Thickness(20, 10, 20, 10),
+                    HorizontalAlignment = HorizontalAlignment.Center
+                };
+
+                retryButton.Click += (s, e) => UpdateCurrentPage();
+
+                stackPanel.Children.Add(retryButton);
+
+                errorPage.Content = stackPanel;
+                MainFrame.Navigate(errorPage);
+            }
+            catch (Exception ex)
+            {
+                Utils.ErrorHandler.LogException(ex, "ShowErrorPage");
+            }
         }
 
         private void UpdateWindowTitle()
@@ -176,22 +311,51 @@ namespace Messenger
                 {
                     Title = $"{currentViewModel.Title} - Messenger";
                 }
+                else
+                {
+                    Title = "Messenger";
+                }
+            }
+            else
+            {
+                Title = "Messenger";
             }
         }
 
         private void UpdateBusyState()
         {
-            // Обновляем состояние курсора в зависимости от IsBusy
-            Cursor = _mainViewModel.IsBusy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
+            Dispatcher.Invoke(() =>
+            {
+                // Обновляем состояние курсора в зависимости от IsBusy
+                Cursor = _mainViewModel.IsBusy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
 
-            // Блокируем/разблокируем навигационные кнопки
-            UpdateNavigationButtonsState();
+                // Блокируем/разблокируем навигационные кнопки
+                UpdateNavigationButtonsState();
+            });
         }
 
         private void UpdateNavigationButtonsState()
         {
-            // Здесь будет обновление состояния навигационных кнопок
+            // Этот метод будет реализован при добавлении именованных кнопок
             // Пока оставляем как заглушку
+        }
+
+        private void UpdateNavigationVisibility()
+        {
+            // Обновляем видимость элементов навигации в зависимости от состояния аутентификации
+            // Реализация будет в XAML через привязки
+        }
+
+        private void UpdateUnreadCounter()
+        {
+            // Обновляем отображение счетчика непрочитанных сообщений
+            // Реализация будет в XAML через привязки
+        }
+
+        private void UpdateWindowStateDependentElements()
+        {
+            // Обновляем элементы интерфейса в зависимости от состояния окна
+            // Например, скрываем/показываем некоторые элементы при полноэкранном режиме
         }
 
         private void RestoreWindowState()
@@ -199,23 +363,24 @@ namespace Messenger
             try
             {
                 // Восстанавливаем размер и положение окна из настроек
-                var settings = Properties.Settings.Default;
+                // Используем ApplicationData для кроссплатформенности
+                var windowSettings = Utils.WindowSettings.Load();
 
-                if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
+                if (windowSettings.Width > 0 && windowSettings.Height > 0)
                 {
-                    Width = settings.WindowWidth;
-                    Height = settings.WindowHeight;
+                    Width = windowSettings.Width;
+                    Height = windowSettings.Height;
                 }
 
-                if (settings.WindowLeft >= 0 && settings.WindowTop >= 0)
+                if (windowSettings.Left >= 0 && windowSettings.Top >= 0)
                 {
-                    Left = settings.WindowLeft;
-                    Top = settings.WindowTop;
+                    Left = windowSettings.Left;
+                    Top = windowSettings.Top;
                 }
 
-                if (settings.WindowState != WindowState.Minimized)
+                if (windowSettings.WindowState != WindowState.Minimized)
                 {
-                    WindowState = settings.WindowState;
+                    WindowState = windowSettings.WindowState;
                 }
             }
             catch (Exception ex)
@@ -228,27 +393,17 @@ namespace Messenger
         {
             try
             {
-                // Сохраняем состояние окна в настройки
-                var settings = Properties.Settings.Default;
-
-                if (WindowState == WindowState.Normal)
+                // Сохраняем состояние окна
+                var windowSettings = new Utils.WindowSettings
                 {
-                    settings.WindowWidth = Width;
-                    settings.WindowHeight = Height;
-                    settings.WindowLeft = Left;
-                    settings.WindowTop = Top;
-                }
-                else
-                {
-                    // Сохраняем восстановленные размеры
-                    settings.WindowWidth = RestoreBounds.Width;
-                    settings.WindowHeight = RestoreBounds.Height;
-                    settings.WindowLeft = RestoreBounds.Left;
-                    settings.WindowTop = RestoreBounds.Top;
-                }
+                    WindowState = WindowState,
+                    Width = RestoreBounds.Width,
+                    Height = RestoreBounds.Height,
+                    Left = RestoreBounds.Left,
+                    Top = RestoreBounds.Top
+                };
 
-                settings.WindowState = WindowState;
-                settings.Save();
+                Utils.WindowSettings.Save(windowSettings);
             }
             catch (Exception ex)
             {
@@ -282,27 +437,6 @@ namespace Messenger
                     }
                 });
             }
-        }
-
-        // Обработчики для кнопок навигации (для прямого доступа из XAML)
-        private void NavigateToChat_Click(object sender, RoutedEventArgs e)
-        {
-            _mainViewModel.NavigateToChatCommand?.Execute(null);
-        }
-
-        private void NavigateToProfile_Click(object sender, RoutedEventArgs e)
-        {
-            _mainViewModel.NavigateToProfileCommand?.Execute(null);
-        }
-
-        private void Logout_Click(object sender, RoutedEventArgs e)
-        {
-            _mainViewModel.LogoutCommand?.Execute(null);
-        }
-
-        private void Refresh_Click(object sender, RoutedEventArgs e)
-        {
-            _mainViewModel.RefreshCommand?.Execute(null);
         }
     }
 }

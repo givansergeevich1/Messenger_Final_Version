@@ -1,5 +1,7 @@
-﻿using System.Windows;
+﻿using System;
+using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media.Animation;
 using System.Windows.Navigation;
 using Messenger.ViewModels;
 
@@ -13,7 +15,7 @@ namespace Messenger
         {
             InitializeComponent();
 
-            _mainViewModel = mainViewModel ?? throw new System.ArgumentNullException(nameof(mainViewModel));
+            _mainViewModel = mainViewModel ?? throw new ArgumentNullException(nameof(mainViewModel));
             DataContext = _mainViewModel;
 
             // Настраиваем навигацию
@@ -34,6 +36,9 @@ namespace Messenger
 
             // Отключаем стандартную навигацию
             MainFrame.NavigationUIVisibility = NavigationUIVisibility.Hidden;
+
+            // Настраиваем поведение Frame
+            MainFrame.JournalOwnership = JournalOwnership.OwnsJournal;
         }
 
         private void SubscribeToEvents()
@@ -44,6 +49,10 @@ namespace Messenger
                 if (e.PropertyName == nameof(MainViewModel.CurrentViewModel))
                 {
                     UpdateCurrentPage();
+                }
+                else if (e.PropertyName == nameof(MainViewModel.IsBusy))
+                {
+                    UpdateBusyState();
                 }
             };
         }
@@ -75,24 +84,76 @@ namespace Messenger
             if (pageType != null)
             {
                 // Создаем страницу и устанавливаем DataContext
-                var page = (Page)System.Activator.CreateInstance(pageType);
+                var page = (Page)Activator.CreateInstance(pageType);
                 page.DataContext = _mainViewModel.CurrentViewModel;
 
-                // Переходим на страницу
-                MainFrame.Navigate(page);
+                // Применяем анимацию перехода
+                ApplyPageTransition(page);
             }
         }
 
-        private System.Type? GetPageTypeForViewModel(object viewModel)
+        private void ApplyPageTransition(Page page)
         {
-            return viewModel switch
+            // Сохраняем текущий контент для анимации
+            var oldContent = MainFrame.Content as UIElement;
+
+            // Устанавливаем новую страницу
+            MainFrame.Navigate(page);
+
+            // Если была предыдущая страница, анимируем переход
+            if (oldContent != null)
             {
-                LoginViewModel => typeof(Views.LoginPage),
-                RegisterViewModel => typeof(Views.RegisterPage),
-                ChatViewModel => typeof(Views.ChatPage),
-                UserProfileViewModel => typeof(Views.UserProfilePage),
-                _ => null
-            };
+                // Создаем анимацию исчезновения старой страницы
+                var fadeOutAnimation = new DoubleAnimation
+                {
+                    From = 1.0,
+                    To = 0.0,
+                    Duration = TimeSpan.FromSeconds(0.2)
+                };
+
+                fadeOutAnimation.Completed += (s, e) =>
+                {
+                    // После исчезновения старой страницы анимируем появление новой
+                    if (MainFrame.Content is UIElement newContent)
+                    {
+                        var fadeInAnimation = new DoubleAnimation
+                        {
+                            From = 0.0,
+                            To = 1.0,
+                            Duration = TimeSpan.FromSeconds(0.3)
+                        };
+
+                        newContent.BeginAnimation(UIElement.OpacityProperty, fadeInAnimation);
+                    }
+                };
+
+                oldContent.BeginAnimation(UIElement.OpacityProperty, fadeOutAnimation);
+            }
+            else
+            {
+                // Если это первая страница, просто делаем ее видимой
+                if (MainFrame.Content is UIElement newContent)
+                {
+                    newContent.Opacity = 1.0;
+                }
+            }
+        }
+
+        private System.Type GetPageTypeForViewModel(object viewModel)
+        {
+            var viewModelType = viewModel.GetType();
+
+            // Маппинг ViewModel типов на соответствующие Page типы
+            if (viewModelType == typeof(LoginViewModel))
+                return typeof(Views.LoginPage);
+            else if (viewModelType == typeof(RegisterViewModel))
+                return typeof(Views.RegisterPage);
+            else if (viewModelType == typeof(ChatViewModel))
+                return typeof(Views.ChatPage);
+            else if (viewModelType == typeof(UserProfileViewModel))
+                return typeof(Views.UserProfilePage);
+
+            return null;
         }
 
         private void OnFrameNavigated(object sender, NavigationEventArgs e)
@@ -102,18 +163,97 @@ namespace Messenger
             {
                 MainFrame.RemoveBackEntry();
             }
+
+            // Обновляем заголовок окна
+            UpdateWindowTitle();
+        }
+
+        private void UpdateWindowTitle()
+        {
+            if (_mainViewModel.CurrentViewModel is BaseViewModel currentViewModel)
+            {
+                if (!string.IsNullOrEmpty(currentViewModel.Title))
+                {
+                    Title = $"{currentViewModel.Title} - Messenger";
+                }
+            }
+        }
+
+        private void UpdateBusyState()
+        {
+            // Обновляем состояние курсора в зависимости от IsBusy
+            Cursor = _mainViewModel.IsBusy ? System.Windows.Input.Cursors.Wait : System.Windows.Input.Cursors.Arrow;
+
+            // Блокируем/разблокируем навигационные кнопки
+            UpdateNavigationButtonsState();
+        }
+
+        private void UpdateNavigationButtonsState()
+        {
+            // Здесь будет обновление состояния навигационных кнопок
+            // Пока оставляем как заглушку
         }
 
         private void RestoreWindowState()
         {
-            // Здесь будет восстановление состояния окна (размер, положение)
-            // Пока оставляем пустым
+            try
+            {
+                // Восстанавливаем размер и положение окна из настроек
+                var settings = Properties.Settings.Default;
+
+                if (settings.WindowWidth > 0 && settings.WindowHeight > 0)
+                {
+                    Width = settings.WindowWidth;
+                    Height = settings.WindowHeight;
+                }
+
+                if (settings.WindowLeft >= 0 && settings.WindowTop >= 0)
+                {
+                    Left = settings.WindowLeft;
+                    Top = settings.WindowTop;
+                }
+
+                if (settings.WindowState != WindowState.Minimized)
+                {
+                    WindowState = settings.WindowState;
+                }
+            }
+            catch (Exception ex)
+            {
+                Utils.ErrorHandler.LogException(ex, "RestoreWindowState");
+            }
         }
 
         private void SaveWindowState()
         {
-            // Здесь будет сохранение состояния окна
-            // Пока оставляем пустым
+            try
+            {
+                // Сохраняем состояние окна в настройки
+                var settings = Properties.Settings.Default;
+
+                if (WindowState == WindowState.Normal)
+                {
+                    settings.WindowWidth = Width;
+                    settings.WindowHeight = Height;
+                    settings.WindowLeft = Left;
+                    settings.WindowTop = Top;
+                }
+                else
+                {
+                    // Сохраняем восстановленные размеры
+                    settings.WindowWidth = RestoreBounds.Width;
+                    settings.WindowHeight = RestoreBounds.Height;
+                    settings.WindowLeft = RestoreBounds.Left;
+                    settings.WindowTop = RestoreBounds.Top;
+                }
+
+                settings.WindowState = WindowState;
+                settings.Save();
+            }
+            catch (Exception ex)
+            {
+                Utils.ErrorHandler.LogException(ex, "SaveWindowState");
+            }
         }
 
         private void UpdateUserStatusOnClose()
@@ -122,7 +262,7 @@ namespace Messenger
             if (_mainViewModel.CurrentUser != null)
             {
                 // Асинхронный вызов будет выполнен в фоне
-                Task.Run(async () =>
+                System.Threading.Tasks.Task.Run(async () =>
                 {
                     try
                     {
@@ -132,11 +272,11 @@ namespace Messenger
                             await databaseService.UpdateUserStatusAsync(
                                 _mainViewModel.CurrentUser.Id,
                                 false,
-                                System.DateTime.UtcNow
+                                DateTime.UtcNow
                             );
                         }
                     }
-                    catch (System.Exception ex)
+                    catch (Exception ex)
                     {
                         Utils.ErrorHandler.LogException(ex, "UpdateUserStatusOnClose");
                     }
@@ -144,7 +284,7 @@ namespace Messenger
             }
         }
 
-        // Методы для обработки нажатий кнопок навигации
+        // Обработчики для кнопок навигации (для прямого доступа из XAML)
         private void NavigateToChat_Click(object sender, RoutedEventArgs e)
         {
             _mainViewModel.NavigateToChatCommand?.Execute(null);

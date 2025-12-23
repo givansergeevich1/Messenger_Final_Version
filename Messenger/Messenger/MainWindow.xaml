@@ -18,24 +18,49 @@
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
         <converters:BoolToInverseVisibilityConverter x:Key="BoolToInverseVisibilityConverter"/>
 
-        <Style TargetType="Button">
+        <!-- Иконки как Geometry ресурсы -->
+        <Geometry x:Key="ChatIcon">M12,2C6.48,2,2,6.48,2,12s4.48,10,10,10s10-4.48,10-10S17.52,2,12,2z M12,20c-4.41,0-8-3.59-8-8s3.59-8,8-8s8,3.59,8,8S16.41,20,12,20z M16,11H8v2h8V11z</Geometry>
+        <Geometry x:Key="ProfileIcon">M12,2C6.48,2,2,6.48,2,12s4.48,10,10,10s10-4.48,10-10S17.52,2,12,2z M12,5c1.66,0,3,1.34,3,3s-1.34,3-3,3s-3-1.34-3-3S10.34,5,12,5z M12,19.2c-2.5,0-4.71-1.28-6-3.22c0.03-1.99,4-3.08,6-3.08c1.99,0,5.97,1.09,6,3.08C16.71,17.92,14.5,19.2,12,19.2z</Geometry>
+        <Geometry x:Key="LogoutIcon">M17,7l-1.41,1.41L18.17,11H8v2h10.17l-2.58,2.58L17,17l5-5L17,7z M4,5h8V3H4C2.9,3,2,3.9,2,5v14c0,1.1,0.9,2,2,2h8v-2H4V5z</Geometry>
+        <Geometry x:Key="RefreshIcon">M17.65,6.35C16.2,4.9,14.21,4,12,4c-4.42,0-7.99,3.58-7.99,8s3.57,8,7.99,8c3.73,0,6.84-2.55,7.73-6h-2.08c-0.82,2.33-3.04,4-5.65,4c-3.31,0-6-2.69-6-6s2.69-6,6-6c1.66,0,3.14,0.69,4.22,1.78L13,11h7V4L17.65,6.35z</Geometry>
+        <Geometry x:Key="LoginIcon">M11,7L9.6,8.4l2.6,2.6H2v2h10.2l-2.6,2.6L11,17l5-5L11,7z M20,19h-8v2h8c1.1,0,2-0.9,2-2V5c0-1.1-0.9-2-2-2h-8v2h8V19z</Geometry>
+        <Geometry x:Key="RegisterIcon">M15,9H9v6h6V9z M11,13h2v-2h-2V13z M19,3H5C3.9,3,3,3.9,3,5v14c0,1.1,0.9,2,2,2h14c1.1,0,2-0.9,2-2V5C21,3.9,20.1,3,19,3z M19,19H5V5h14V19z</Geometry>
+
+        <Style TargetType="Button" x:Key="NavButtonStyle">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Margin" Value="0,5,0,5"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
+                        <Border Name="Border"
+                                Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="4">
                             <ContentPresenter HorizontalAlignment="Center" 
                                               VerticalAlignment="Center"/>
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="#3A3A3A"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="#4A4A4A"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <Style TargetType="Path" x:Key="NavIconStyle">
+            <Setter Property="Fill" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="Stretch" Value="Uniform"/>
+            <Setter Property="Width" Value="24"/>
+            <Setter Property="Height" Value="24"/>
         </Style>
     </Window.Resources>
 
@@ -74,12 +99,47 @@
                                Foreground="{StaticResource TextBrush}"/>
                 </StackPanel>
 
-                <!-- Navigation Controls (will be added later) -->
-                <StackPanel Grid.Column="2" 
+                <!-- User Info (visible when authenticated) -->
+                <StackPanel Grid.Column="1" 
                             Orientation="Horizontal"
-                            VerticalAlignment="Center">
-
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Visibility="{Binding IsAuthenticated, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <Border Width="32" 
+                            Height="32" 
+                            CornerRadius="16"
+                            Background="{StaticResource PrimaryBrush}"
+                            Margin="0,0,10,0">
+                        <TextBlock Text="{Binding CurrentUser.DisplayName, StringFormat={}{0:U}}"
+                                   Foreground="White"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontWeight="Bold"/>
+                    </Border>
+                    <StackPanel>
+                        <TextBlock Text="{Binding CurrentUser.DisplayName}"
+                                   Foreground="{StaticResource TextBrush}"
+                                   FontWeight="SemiBold"/>
+                        <TextBlock Text="{Binding CurrentUser.Email}"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   FontSize="11"/>
+                    </StackPanel>
                 </StackPanel>
+
+                <!-- Unread Messages Counter -->
+                <Border Grid.Column="2"
+                        CornerRadius="10"
+                        Background="{StaticResource PrimaryBrush}"
+                        Padding="6,2"
+                        Margin="10,0,0,0"
+                        VerticalAlignment="Center"
+                        Visibility="{Binding IsAuthenticated, Converter={StaticResource BoolToVisibilityConverter}}">
+                    <TextBlock Text="{Binding UnreadMessagesCount}"
+                               Foreground="White"
+                               FontWeight="Bold"
+                               MinWidth="15"
+                               TextAlignment="Center"/>
+                </Border>
             </Grid>
         </Border>
 
@@ -92,10 +152,75 @@
                 <!-- Content -->
             </Grid.ColumnDefinitions>
 
-            <!-- Navigation Panel (will be added in next commit) -->
+            <!-- Navigation Panel -->
             <Border Grid.Column="0" 
                     Width="60" 
                     Background="{StaticResource SecondaryBrush}">
+                <StackPanel Orientation="Vertical"
+                            VerticalAlignment="Top"
+                            Margin="0,20,0,0">
+
+                    <!-- Chat Button -->
+                    <Button Style="{StaticResource NavButtonStyle}"
+                            Height="50"
+                            Command="{Binding NavigateToChatCommand}"
+                            ToolTip="Чаты">
+                        <Path Data="{StaticResource ChatIcon}"
+                              Style="{StaticResource NavIconStyle}"/>
+                    </Button>
+
+                    <!-- Profile Button -->
+                    <Button Style="{StaticResource NavButtonStyle}"
+                            Height="50"
+                            Command="{Binding NavigateToProfileCommand}"
+                            ToolTip="Профиль">
+                        <Path Data="{StaticResource ProfileIcon}"
+                              Style="{StaticResource NavIconStyle}"/>
+                    </Button>
+
+                    <!-- Separator -->
+                    <Border Height="1" 
+                            Background="#3A3A3A"
+                            Margin="10,10,10,10"/>
+
+                    <!-- Login/Register Buttons (visible when NOT authenticated) -->
+                    <Button Style="{StaticResource NavButtonStyle}"
+                            Height="50"
+                            Command="{Binding NavigateToLoginCommand}"
+                            ToolTip="Войти"
+                            Visibility="{Binding IsAuthenticated, Converter={StaticResource BoolToInverseVisibilityConverter}}">
+                        <Path Data="{StaticResource LoginIcon}"
+                              Style="{StaticResource NavIconStyle}"/>
+                    </Button>
+
+                    <Button Style="{StaticResource NavButtonStyle}"
+                            Height="50"
+                            Command="{Binding NavigateToRegisterCommand}"
+                            ToolTip="Регистрация"
+                            Visibility="{Binding IsAuthenticated, Converter={StaticResource BoolToInverseVisibilityConverter}}">
+                        <Path Data="{StaticResource RegisterIcon}"
+                              Style="{StaticResource NavIconStyle}"/>
+                    </Button>
+
+                    <!-- Logout Button (visible when authenticated) -->
+                    <Button Style="{StaticResource NavButtonStyle}"
+                            Height="50"
+                            Command="{Binding LogoutCommand}"
+                            ToolTip="Выйти"
+                            Visibility="{Binding IsAuthenticated, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <Path Data="{StaticResource LogoutIcon}"
+                              Style="{StaticResource NavIconStyle}"/>
+                    </Button>
+
+                    <!-- Refresh Button -->
+                    <Button Style="{StaticResource NavButtonStyle}"
+                            Height="50"
+                            Command="{Binding RefreshCommand}"
+                            ToolTip="Обновить">
+                        <Path Data="{StaticResource RefreshIcon}"
+                              Style="{StaticResource NavIconStyle}"/>
+                    </Button>
+                </StackPanel>
             </Border>
 
             <!-- Main Content Frame -->

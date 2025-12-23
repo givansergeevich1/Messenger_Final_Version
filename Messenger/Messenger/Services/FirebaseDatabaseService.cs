@@ -221,42 +221,372 @@ namespace Messenger.Services
             }
         }
 
-        // Остальные методы будут реализованы позже
-        public Task<ChatRoom?> GetChatAsync(string chatId)
+        // Методы для работы с чатами
+        public async Task<ChatRoom?> GetChatAsync(string chatId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                var chatPath = GetFirebasePath(FirebaseConfig.ChatsPath, chatId);
+                var chatData = await _firebaseClient
+                    .Child(chatPath)
+                    .OnceSingleAsync<Dictionary<string, object>>();
+
+                if (chatData == null)
+                    return null;
+
+                chatData["id"] = chatId;
+                return ChatRoom.FromDictionary(chatData);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting chat {chatId}: {ex.Message}");
+                return null;
+            }
         }
 
-        public Task<List<ChatRoom>> GetUserChatsAsync(string userId)
+        public async Task<List<ChatRoom>> GetUserChatsAsync(string userId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(userId))
+                    throw new ArgumentException("UserId cannot be null or empty");
+
+                // Сначала получаем все чаты
+                var chatsPath = GetFirebasePath(FirebaseConfig.ChatsPath);
+                var allChatsData = await _firebaseClient
+                    .Child(chatsPath)
+                    .OnceAsync<Dictionary<string, object>>();
+
+                var userChats = new List<ChatRoom>();
+
+                foreach (var chatSnapshot in allChatsData)
+                {
+                    try
+                    {
+                        var chatData = chatSnapshot.Object;
+
+                        // Проверяем, является ли пользователь участником чата
+                        if (chatData.TryGetValue("participantIds", out var participantsObj))
+                        {
+                            if (participantsObj is List<object> participantsList)
+                            {
+                                var participantIds = participantsList.ConvertAll(p => p.ToString() ?? string.Empty);
+
+                                if (participantIds.Contains(userId))
+                                {
+                                    chatData["id"] = chatSnapshot.Key;
+                                    var chat = ChatRoom.FromDictionary(chatData);
+                                    userChats.Add(chat);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error parsing chat {chatSnapshot.Key}: {ex.Message}");
+                    }
+                }
+
+                // Сортируем по времени последнего сообщения (сначала новые)
+                return userChats
+                    .OrderByDescending(c => c.LastMessageTime)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting user chats for {userId}: {ex.Message}");
+                return new List<ChatRoom>();
+            }
         }
 
-        public Task<ChatRoom> CreateChatAsync(string chatName, string createdBy, List<string> participantIds, bool isGroupChat = false)
+        public async Task<ChatRoom> CreateChatAsync(string chatName, string createdBy, List<string> participantIds, bool isGroupChat = false)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(chatName))
+                    throw new ArgumentException("Chat name cannot be null or empty");
+
+                if (string.IsNullOrEmpty(createdBy))
+                    throw new ArgumentException("CreatedBy cannot be null or empty");
+
+                if (participantIds == null || participantIds.Count == 0)
+                    throw new ArgumentException("ParticipantIds cannot be null or empty");
+
+                // Проверяем, что создатель есть в списке участников
+                if (!participantIds.Contains(createdBy))
+                {
+                    participantIds.Add(createdBy);
+                }
+
+                // Создаем новый чат
+                var newChat = new ChatRoom(chatName, createdBy, isGroupChat)
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    ParticipantIds = participantIds.Distinct().ToList(),
+                    CreatedAt = DateTime.UtcNow,
+                    LastMessageTime = DateTime.UtcNow
+                };
+
+                var chatPath = GetFirebasePath(FirebaseConfig.ChatsPath, newChat.Id);
+                var chatDict = newChat.ToDictionary();
+
+                await _firebaseClient
+                    .Child(chatPath)
+                    .PutAsync(chatDict);
+
+                // Обновляем список чатов для каждого участника
+                foreach (var participantId in participantIds)
+                {
+                    await UpdateUserChatListAsync(participantId, newChat.Id, true);
+                }
+
+                Console.WriteLine($"Chat {newChat.Id} created successfully with {participantIds.Count} participants");
+                return newChat;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error creating chat: {ex.Message}");
+                throw;
+            }
         }
 
-        public Task<bool> UpdateChatAsync(ChatRoom chat)
+        public async Task<bool> UpdateChatAsync(ChatRoom chat)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (chat == null)
+                    throw new ArgumentNullException(nameof(chat));
+
+                if (string.IsNullOrEmpty(chat.Id))
+                    throw new ArgumentException("Chat Id cannot be null or empty");
+
+                var chatPath = GetFirebasePath(FirebaseConfig.ChatsPath, chat.Id);
+                var chatDict = chat.ToDictionary();
+
+                await _firebaseClient
+                    .Child(chatPath)
+                    .PutAsync(chatDict);
+
+                Console.WriteLine($"Chat {chat.Id} updated successfully");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating chat {chat?.Id}: {ex.Message}");
+                return false;
+            }
         }
 
-        public Task<bool> DeleteChatAsync(string chatId)
+        public async Task<bool> DeleteChatAsync(string chatId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                // Сначала получаем информацию о чате
+                var chat = await GetChatAsync(chatId);
+                if (chat == null)
+                {
+                    Console.WriteLine($"Chat {chatId} not found");
+                    return false;
+                }
+
+                // Удаляем чат
+                var chatPath = GetFirebasePath(FirebaseConfig.ChatsPath, chatId);
+                await _firebaseClient
+                    .Child(chatPath)
+                    .DeleteAsync();
+
+                // Удаляем сообщения чата
+                var messagesPath = GetFirebasePath(FirebaseConfig.MessagesPath, chatId);
+                await _firebaseClient
+                    .Child(messagesPath)
+                    .DeleteAsync();
+
+                // Обновляем список чатов для каждого участника
+                foreach (var participantId in chat.ParticipantIds)
+                {
+                    await UpdateUserChatListAsync(participantId, chatId, false);
+                }
+
+                Console.WriteLine($"Chat {chatId} deleted successfully");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting chat {chatId}: {ex.Message}");
+                return false;
+            }
         }
 
-        public Task<bool> AddUserToChatAsync(string chatId, string userId)
+        public async Task<bool> AddUserToChatAsync(string chatId, string userId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                if (string.IsNullOrEmpty(userId))
+                    throw new ArgumentException("UserId cannot be null or empty");
+
+                // Получаем текущий чат
+                var chat = await GetChatAsync(chatId);
+                if (chat == null)
+                {
+                    Console.WriteLine($"Chat {chatId} not found");
+                    return false;
+                }
+
+                // Проверяем, не добавлен ли уже пользователь
+                if (chat.ParticipantIds.Contains(userId))
+                {
+                    Console.WriteLine($"User {userId} is already in chat {chatId}");
+                    return true;
+                }
+
+                // Добавляем пользователя
+                chat.ParticipantIds.Add(userId);
+
+                // Обновляем чат в базе данных
+                var chatPath = GetFirebasePath(FirebaseConfig.ChatsPath, chatId);
+                var updates = new Dictionary<string, object>
+                {
+                    { "participantIds", chat.ParticipantIds }
+                };
+
+                await _firebaseClient
+                    .Child(chatPath)
+                    .PatchAsync(updates);
+
+                // Обновляем список чатов пользователя
+                await UpdateUserChatListAsync(userId, chatId, true);
+
+                Console.WriteLine($"User {userId} added to chat {chatId}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error adding user {userId} to chat {chatId}: {ex.Message}");
+                return false;
+            }
         }
 
-        public Task<bool> RemoveUserFromChatAsync(string chatId, string userId)
+        public async Task<bool> RemoveUserFromChatAsync(string chatId, string userId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                if (string.IsNullOrEmpty(userId))
+                    throw new ArgumentException("UserId cannot be null or empty");
+
+                // Получаем текущий чат
+                var chat = await GetChatAsync(chatId);
+                if (chat == null)
+                {
+                    Console.WriteLine($"Chat {chatId} not found");
+                    return false;
+                }
+
+                // Проверяем, есть ли пользователь в чате
+                if (!chat.ParticipantIds.Contains(userId))
+                {
+                    Console.WriteLine($"User {userId} is not in chat {chatId}");
+                    return true;
+                }
+
+                // Удаляем пользователя
+                chat.ParticipantIds.Remove(userId);
+
+                // Если в чате не осталось участников, удаляем его
+                if (chat.ParticipantIds.Count == 0)
+                {
+                    return await DeleteChatAsync(chatId);
+                }
+
+                // Обновляем чат в базе данных
+                var chatPath = GetFirebasePath(FirebaseConfig.ChatsPath, chatId);
+                var updates = new Dictionary<string, object>
+                {
+                    { "participantIds", chat.ParticipantIds }
+                };
+
+                await _firebaseClient
+                    .Child(chatPath)
+                    .PatchAsync(updates);
+
+                // Обновляем список чатов пользователя
+                await UpdateUserChatListAsync(userId, chatId, false);
+
+                Console.WriteLine($"User {userId} removed from chat {chatId}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error removing user {userId} from chat {chatId}: {ex.Message}");
+                return false;
+            }
         }
 
+        private async Task UpdateUserChatListAsync(string userId, string chatId, bool addChat)
+        {
+            try
+            {
+                var userPath = GetFirebasePath(FirebaseConfig.UsersPath, userId);
+
+                // Получаем текущего пользователя
+                var userData = await _firebaseClient
+                    .Child(userPath)
+                    .OnceSingleAsync<Dictionary<string, object>>();
+
+                if (userData == null)
+                    return;
+
+                // Получаем текущий список чатов пользователя
+                List<string> chatIds = new List<string>();
+                if (userData.TryGetValue("chatIds", out var chatIdsObj))
+                {
+                    if (chatIdsObj is List<object> chatIdsList)
+                    {
+                        chatIds = chatIdsList.ConvertAll(id => id.ToString() ?? string.Empty);
+                    }
+                }
+
+                // Обновляем список
+                if (addChat)
+                {
+                    if (!chatIds.Contains(chatId))
+                    {
+                        chatIds.Add(chatId);
+                    }
+                }
+                else
+                {
+                    chatIds.Remove(chatId);
+                }
+
+                // Обновляем пользователя в базе данных
+                var updates = new Dictionary<string, object>
+                {
+                    { "chatIds", chatIds }
+                };
+
+                await _firebaseClient
+                    .Child(userPath)
+                    .PatchAsync(updates);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating chat list for user {userId}: {ex.Message}");
+            }
+        }
+
+        // Методы для работы с сообщениями (будут реализованы в следующих коммитах)
         public Task<Message?> GetMessageAsync(string messageId)
         {
             throw new NotImplementedException();
@@ -287,6 +617,7 @@ namespace Messenger.Services
             throw new NotImplementedException();
         }
 
+        // Realtime listeners (будут реализованы в следующих коммитах)
         public Task SubscribeToChatMessages(string chatId, Action<Message> onMessageAdded)
         {
             throw new NotImplementedException();
@@ -307,6 +638,7 @@ namespace Messenger.Services
             throw new NotImplementedException();
         }
 
+        // Вспомогательные методы (будут реализованы в следующих коммитах)
         public Task<List<User>> SearchUsersAsync(string searchQuery)
         {
             throw new NotImplementedException();

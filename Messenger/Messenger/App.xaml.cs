@@ -21,6 +21,7 @@ namespace Messenger
         {
             // Регистрация сервисов
             services.AddSingleton<IAuthService, FirebaseAuthService>();
+            services.AddSingleton<IDatabaseService, FirebaseDatabaseService>();
 
             // Регистрация ViewModels
             services.AddSingleton<MainViewModel>();

@@ -826,6 +826,168 @@ namespace Messenger.Services
             }
         }
 
+        // Realtime listeners
+        public async Task SubscribeToChatMessages(string chatId, Action<Message> onMessageAdded)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                if (onMessageAdded == null)
+                    throw new ArgumentNullException(nameof(onMessageAdded));
+
+                // Отписываемся от существующей подписки, если есть
+                await UnsubscribeFromChatMessages(chatId);
+
+                var messagesPath = GetFirebasePath(FirebaseConfig.MessagesPath, chatId);
+
+                var subscription = _firebaseClient
+                    .Child(messagesPath)
+                    .AsObservable<Dictionary<string, object>>(elementRoot: null)
+                    .Subscribe(
+                        onNext: snapshot =>
+                        {
+                            try
+                            {
+                                if (snapshot.Object != null && snapshot.Key != null)
+                                {
+                                    var messageData = snapshot.Object;
+                                    messageData["id"] = snapshot.Key;
+                                    messageData["chatId"] = chatId;
+
+                                    var message = Message.FromDictionary(messageData);
+                                    onMessageAdded?.Invoke(message);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error processing message update: {ex.Message}");
+                            }
+                        },
+                        onError: ex =>
+                        {
+                            Console.WriteLine($"Error in chat messages subscription for {chatId}: {ex.Message}");
+                            _messageSubscriptions.Remove(chatId);
+                        }
+                    );
+
+                _messageSubscriptions[chatId] = subscription;
+                Console.WriteLine($"Subscribed to chat messages for {chatId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error subscribing to chat messages for {chatId}: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async Task SubscribeToUserChats(string userId, Action<ChatRoom> onChatUpdated)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(userId))
+                    throw new ArgumentException("UserId cannot be null or empty");
+
+                if (onChatUpdated == null)
+                    throw new ArgumentNullException(nameof(onChatUpdated));
+
+                // Отписываемся от существующей подписки, если есть
+                await UnsubscribeFromUserChats(userId);
+
+                var chatsPath = GetFirebasePath(FirebaseConfig.ChatsPath);
+
+                var subscription = _firebaseClient
+                    .Child(chatsPath)
+                    .AsObservable<Dictionary<string, object>>(elementRoot: null)
+                    .Subscribe(
+                        onNext: snapshot =>
+                        {
+                            try
+                            {
+                                if (snapshot.Object != null && snapshot.Key != null)
+                                {
+                                    var chatData = snapshot.Object;
+
+                                    // Проверяем, является ли пользователь участником чата
+                                    if (chatData.TryGetValue("participantIds", out var participantsObj))
+                                    {
+                                        if (participantsObj is List<object> participantsList)
+                                        {
+                                            var participantIds = participantsList.ConvertAll(p => p.ToString() ?? string.Empty);
+
+                                            if (participantIds.Contains(userId))
+                                            {
+                                                chatData["id"] = snapshot.Key;
+                                                var chat = ChatRoom.FromDictionary(chatData);
+                                                onChatUpdated?.Invoke(chat);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error processing chat update: {ex.Message}");
+                            }
+                        },
+                        onError: ex =>
+                        {
+                            Console.WriteLine($"Error in user chats subscription for {userId}: {ex.Message}");
+                            _chatSubscriptions.Remove(userId);
+                        }
+                    );
+
+                _chatSubscriptions[userId] = subscription;
+                Console.WriteLine($"Subscribed to user chats for {userId}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error subscribing to user chats for {userId}: {ex.Message}");
+                throw;
+            }
+        }
+
+        public Task UnsubscribeFromChatMessages(string chatId)
+        {
+            try
+            {
+                if (_messageSubscriptions.TryGetValue(chatId, out var subscription))
+                {
+                    subscription?.Dispose();
+                    _messageSubscriptions.Remove(chatId);
+                    Console.WriteLine($"Unsubscribed from chat messages for {chatId}");
+                }
+
+                return Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error unsubscribing from chat messages for {chatId}: {ex.Message}");
+                return Task.CompletedTask;
+            }
+        }
+
+        public Task UnsubscribeFromUserChats(string userId)
+        {
+            try
+            {
+                if (_chatSubscriptions.TryGetValue(userId, out var subscription))
+                {
+                    subscription?.Dispose();
+                    _chatSubscriptions.Remove(userId);
+                    Console.WriteLine($"Unsubscribed from user chats for {userId}");
+                }
+
+                return Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error unsubscribing from user chats for {userId}: {ex.Message}");
+                return Task.CompletedTask;
+            }
+        }
+
         private async Task UpdateChatLastMessageAsync(string chatId, string lastMessage, string lastMessageSender, DateTime lastMessageTime)
         {
             try
@@ -852,28 +1014,7 @@ namespace Messenger.Services
             }
         }
 
-        // Realtime listeners
-        public Task SubscribeToChatMessages(string chatId, Action<Message> onMessageAdded)
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task SubscribeToUserChats(string userId, Action<ChatRoom> onChatUpdated)
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task UnsubscribeFromChatMessages(string chatId)
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task UnsubscribeFromUserChats(string userId)
-        {
-            throw new NotImplementedException();
-        }
-
-        // Вспомогательные методы
+        // Остальные методы будут реализованы позже
         public Task<List<User>> SearchUsersAsync(string searchQuery)
         {
             throw new NotImplementedException();

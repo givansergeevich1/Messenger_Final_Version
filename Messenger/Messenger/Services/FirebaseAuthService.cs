@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -95,6 +94,7 @@ namespace Messenger.Services
         {
             try
             {
+                // Валидация входных данных
                 if (string.IsNullOrWhiteSpace(email) ||
                     string.IsNullOrWhiteSpace(username) ||
                     string.IsNullOrWhiteSpace(password))
@@ -117,6 +117,7 @@ namespace Messenger.Services
                     throw new ArgumentException($"Пароль должен содержать не менее {AppConstants.MinPasswordLength} символов");
                 }
 
+                // Подготовка данных для регистрации
                 var requestData = new
                 {
                     email = email,
@@ -131,6 +132,7 @@ namespace Messenger.Services
                     "application/json"
                 );
 
+                // Отправка запроса на регистрацию
                 var response = await _httpClient.PostAsync(
                     $"accounts:signUp?key={FirebaseConfig.ApiKey}",
                     content
@@ -143,6 +145,7 @@ namespace Messenger.Services
 
                     if (result != null && !string.IsNullOrEmpty(result.LocalId))
                     {
+                        // Создаем объект пользователя
                         _currentUser = new User(result.LocalId, email, username)
                         {
                             DisplayName = username,
@@ -151,22 +154,29 @@ namespace Messenger.Services
                             IsOnline = true
                         };
 
+                        // Сохраняем токены
                         await SecureStorage.SetAsync("auth_token", result.IdToken);
                         await SecureStorage.SetAsync("refresh_token", result.RefreshToken);
                         await SecureStorage.SetAsync("user_id", result.LocalId);
 
+                        // Уведомляем об изменении состояния аутентификации
                         OnAuthStateChanged(_currentUser);
+
+                        // Здесь будет вызов для создания записи пользователя в базе данных
+                        // (будет добавлен позже при реализации DatabaseService)
 
                         return _currentUser;
                     }
                 }
                 else
                 {
+                    // Обработка ошибок Firebase
                     var errorContent = await response.Content.ReadAsStringAsync();
                     var error = JsonConvert.DeserializeObject<FirebaseErrorResponse>(errorContent);
 
                     string errorMessage = error?.Error?.Message ?? "Ошибка регистрации";
 
+                    // Перевод стандартных ошибок Firebase
                     if (errorMessage.Contains("EMAIL_EXISTS"))
                     {
                         errorMessage = "Пользователь с таким email уже существует";
@@ -195,10 +205,12 @@ namespace Messenger.Services
         {
             try
             {
+                // Получаем refresh token
                 var refreshToken = await SecureStorage.GetAsync("refresh_token");
 
                 if (!string.IsNullOrEmpty(refreshToken))
                 {
+                    // Отзываем refresh token на сервере Firebase
                     var requestData = new
                     {
                         token = refreshToken
@@ -218,29 +230,99 @@ namespace Messenger.Services
             }
             catch (Exception ex)
             {
+                // Игнорируем ошибки при отзыве токена
                 Console.WriteLine($"Error revoking token: {ex.Message}");
             }
             finally
             {
+                // Всегда очищаем локальные данные
                 await ClearLocalAuthData();
 
+                // Сбрасываем текущего пользователя
                 _currentUser = null;
 
+                // Уведомляем об изменении состояния
                 OnAuthStateChanged(null);
             }
 
             return true;
         }
 
+        public async Task<bool> ResetPasswordAsync(string email)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(email))
+                {
+                    throw new ArgumentException("Email не может быть пустым");
+                }
+
+                if (!email.IsValidEmail())
+                {
+                    throw new ArgumentException("Некорректный формат email");
+                }
+
+                var requestData = new
+                {
+                    requestType = "PASSWORD_RESET",
+                    email = email
+                };
+
+                var content = new StringContent(
+                    JsonConvert.SerializeObject(requestData),
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+
+                var response = await _httpClient.PostAsync(
+                    $"accounts:sendOobCode?key={FirebaseConfig.ApiKey}",
+                    content
+                );
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    var result = JsonConvert.DeserializeObject<PasswordResetResponse>(responseContent);
+
+                    return result != null && result.Email == email;
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    var error = JsonConvert.DeserializeObject<FirebaseErrorResponse>(errorContent);
+
+                    string errorMessage = error?.Error?.Message ?? "Ошибка восстановления пароля";
+
+                    // Перевод стандартных ошибок Firebase
+                    if (errorMessage.Contains("EMAIL_NOT_FOUND"))
+                    {
+                        errorMessage = "Пользователь с таким email не найден";
+                    }
+                    else if (errorMessage.Contains("TOO_MANY_ATTEMPTS_TRY_LATER"))
+                    {
+                        errorMessage = "Слишком много попыток. Попробуйте позже";
+                    }
+
+                    throw new Exception(errorMessage);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Ошибка восстановления пароля: {ex.Message}", ex);
+            }
+        }
+
         private async Task ClearLocalAuthData()
         {
             try
             {
+                // Очищаем все сохраненные токены и данные
                 SecureStorage.Remove("auth_token");
                 SecureStorage.Remove("refresh_token");
                 SecureStorage.Remove("user_id");
                 SecureStorage.Remove("remember_me");
 
+                // Также удаляем данные из памяти
                 await Task.CompletedTask;
             }
             catch (Exception ex)
@@ -249,11 +331,12 @@ namespace Messenger.Services
             }
         }
 
-        public Task<bool> ResetPasswordAsync(string email)
+        protected virtual void OnAuthStateChanged(User? user)
         {
-            throw new NotImplementedException();
+            AuthStateChanged?.Invoke(this, new AuthStateChangedEventArgs(user));
         }
 
+        // Остальные методы будут реализованы позже
         public Task<bool> IsAuthenticatedAsync()
         {
             throw new NotImplementedException();
@@ -269,11 +352,7 @@ namespace Messenger.Services
             throw new NotImplementedException();
         }
 
-        protected virtual void OnAuthStateChanged(User? user)
-        {
-            AuthStateChanged?.Invoke(this, new AuthStateChangedEventArgs(user));
-        }
-
+        // Вспомогательные классы для десериализации
         private class FirebaseAuthResponse
         {
             [JsonProperty("kind")]
@@ -329,6 +408,15 @@ namespace Messenger.Services
 
             [JsonProperty("reason")]
             public string Reason { get; set; } = string.Empty;
+        }
+
+        private class PasswordResetResponse
+        {
+            [JsonProperty("kind")]
+            public string Kind { get; set; } = string.Empty;
+
+            [JsonProperty("email")]
+            public string Email { get; set; } = string.Empty;
         }
     }
 }

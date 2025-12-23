@@ -23,12 +23,15 @@ namespace Messenger
             services.AddSingleton<IAuthService, FirebaseAuthService>();
             services.AddSingleton<IDatabaseService, FirebaseDatabaseService>();
 
-            // Регистрация ViewModels
+            // Регистрация ViewModels с передачей ServiceProvider
             services.AddSingleton<MainViewModel>();
             services.AddTransient<LoginViewModel>();
             services.AddTransient<RegisterViewModel>();
             services.AddTransient<ChatViewModel>();
             services.AddTransient<UserProfileViewModel>();
+
+            // Регистрация ServiceProvider для использования в ViewModels
+            services.AddSingleton<IServiceProvider>(provider => provider);
 
             // Регистрация главного окна
             services.AddSingleton<MainWindow>();

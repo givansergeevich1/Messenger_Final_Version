@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using Messenger.Models;
 using Messenger.Services.Interfaces;
 using Messenger.Utils;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Messenger.ViewModels
 {
@@ -14,6 +15,7 @@ namespace Messenger.ViewModels
     {
         private readonly IAuthService _authService;
         private readonly IDatabaseService _databaseService;
+        private readonly IServiceProvider _serviceProvider;
         private ObservableObject? _currentViewModel;
 
         [ObservableProperty]
@@ -28,10 +30,14 @@ namespace Messenger.ViewModels
         [ObservableProperty]
         private int _unreadMessagesCount;
 
-        public MainViewModel(IAuthService authService, IDatabaseService databaseService)
+        public MainViewModel(
+            IAuthService authService,
+            IDatabaseService databaseService,
+            IServiceProvider serviceProvider)
         {
             _authService = authService ?? throw new ArgumentNullException(nameof(authService));
             _databaseService = databaseService ?? throw new ArgumentNullException(nameof(databaseService));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
 
             InitializeCommands();
             SubscribeToAuthEvents();
@@ -68,11 +74,14 @@ namespace Messenger.ViewModels
 
             if (IsAuthenticated && CurrentUser != null)
             {
-                await UpdateUserStatusAsync(true);
-                await LoadUnreadMessagesCountAsync();
+                await ExecuteWithBusyStateAsync(async () =>
+                {
+                    await UpdateUserStatusAsync(true);
+                    await LoadUnreadMessagesCountAsync();
 
-                // Автоматически переходим на страницу чатов после входа
-                NavigateToChat();
+                    // Автоматически переходим на страницу чатов после входа
+                    NavigateToChat();
+                });
             }
             else
             {
@@ -146,7 +155,7 @@ namespace Messenger.ViewModels
             }
         }
 
-        // Команды будут определены в следующем коммите
+        // Команды навигации
         public ICommand NavigateToLoginCommand { get; private set; } = null!;
         public ICommand NavigateToRegisterCommand { get; private set; } = null!;
         public ICommand NavigateToChatCommand { get; private set; } = null!;
@@ -156,34 +165,119 @@ namespace Messenger.ViewModels
 
         private void NavigateToLogin()
         {
-            // Будет реализовано в следующем коммите
+            try
+            {
+                var loginViewModel = _serviceProvider.GetService<LoginViewModel>();
+                if (loginViewModel != null)
+                {
+                    loginViewModel.ParentViewModel = this;
+                    CurrentViewModel = loginViewModel;
+                    AppTitle = "Вход - Messenger";
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "NavigateToLogin");
+            }
         }
 
         private void NavigateToRegister()
         {
-            // Будет реализовано в следующем коммите
+            try
+            {
+                var registerViewModel = _serviceProvider.GetService<RegisterViewModel>();
+                if (registerViewModel != null)
+                {
+                    registerViewModel.ParentViewModel = this;
+                    CurrentViewModel = registerViewModel;
+                    AppTitle = "Регистрация - Messenger";
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "NavigateToRegister");
+            }
         }
 
         private void NavigateToChat()
         {
-            // Будет реализовано в следующем коммите
+            try
+            {
+                var chatViewModel = _serviceProvider.GetService<ChatViewModel>();
+                if (chatViewModel != null)
+                {
+                    chatViewModel.ParentViewModel = this;
+                    CurrentViewModel = chatViewModel;
+                    AppTitle = $"Чат - Messenger";
+
+                    // Обновляем счетчик непрочитанных сообщений
+                    LoadUnreadMessagesCountAsync().ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "NavigateToChat");
+            }
         }
 
         private void NavigateToProfile()
         {
-            // Будет реализовано в следующем коммите
+            try
+            {
+                var profileViewModel = _serviceProvider.GetService<UserProfileViewModel>();
+                if (profileViewModel != null)
+                {
+                    profileViewModel.ParentViewModel = this;
+                    CurrentViewModel = profileViewModel;
+                    AppTitle = $"Профиль - Messenger";
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "NavigateToProfile");
+            }
         }
 
         private async Task LogoutAsync()
         {
-            // Будет реализовано в следующем коммите
-            await Task.CompletedTask;
+            try
+            {
+                if (CurrentUser != null)
+                {
+                    await UpdateUserStatusAsync(false);
+                }
+
+                await _authService.LogoutAsync();
+
+                // Navigation will be handled by AuthStateChanged event
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "Logout");
+            }
         }
 
         private async Task RefreshAsync()
         {
-            // Будет реализовано в следующем коммите
-            await Task.CompletedTask;
+            try
+            {
+                await LoadUnreadMessagesCountAsync();
+
+                if (CurrentViewModel is ChatViewModel chatViewModel)
+                {
+                    await chatViewModel.RefreshChatsAsync();
+                }
+                else if (CurrentViewModel is UserProfileViewModel profileViewModel)
+                {
+                    await profileViewModel.LoadUserDataAsync();
+                }
+
+                ErrorHandler.ShowInfoMessage("Данные обновлены", "Обновление");
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "Refresh");
+            }
         }
     }
 }

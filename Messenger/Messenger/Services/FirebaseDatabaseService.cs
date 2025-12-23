@@ -679,6 +679,7 @@ namespace Messenger.Services
             }
         }
 
+        // Улучшенный метод SendMessageAsync с дополнительной проверкой
         public async Task<Message> SendMessageAsync(string chatId, string senderId, string senderName, string content)
         {
             try
@@ -695,18 +696,36 @@ namespace Messenger.Services
                 if (string.IsNullOrEmpty(content))
                     throw new ArgumentException("Content cannot be null or empty");
 
+                // Проверяем существование чата
+                var chat = await GetChatAsync(chatId);
+                if (chat == null)
+                {
+                    throw new Exception($"Chat {chatId} not found");
+                }
+
+                // Проверяем, является ли отправитель участником чата
+                if (!chat.ParticipantIds.Contains(senderId))
+                {
+                    throw new Exception($"User {senderId} is not a participant of chat {chatId}");
+                }
+
+                // Ограничиваем длину сообщения
                 if (content.Length > AppConstants.MaxMessageLength)
                 {
                     content = content.Truncate(AppConstants.MaxMessageLength);
                 }
 
+                // Генерируем уникальный ID для сообщения
+                var messageId = GenerateMessageId();
+                var timestamp = DateTime.UtcNow;
+
                 // Создаем новое сообщение
-                var messageId = Guid.NewGuid().ToString();
                 var newMessage = new Message(senderId, senderName, content, chatId)
                 {
                     Id = messageId,
-                    Timestamp = DateTime.UtcNow,
-                    IsRead = false
+                    Timestamp = timestamp,
+                    IsRead = false,
+                    MessageType = "text"
                 };
 
                 // Сохраняем сообщение в базе данных
@@ -718,15 +737,17 @@ namespace Messenger.Services
                     .PutAsync(messageDict);
 
                 // Обновляем информацию о последнем сообщении в чате
-                await UpdateChatLastMessageAsync(chatId, content, senderName, newMessage.Timestamp);
+                await UpdateChatLastMessageAsync(chatId, content, senderName, timestamp);
 
-                Console.WriteLine($"Message {messageId} sent to chat {chatId}");
+                // Отмечаем сообщение как отправленное
+                Console.WriteLine($"Message {messageId} sent to chat {chatId} by {senderName}");
+
                 return newMessage;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error sending message to chat {chatId}: {ex.Message}");
-                throw;
+                throw new Exception($"Failed to send message: {ex.Message}", ex);
             }
         }
 
@@ -767,7 +788,6 @@ namespace Messenger.Services
                 if (string.IsNullOrEmpty(messageId))
                     throw new ArgumentException("MessageId cannot be null or empty");
 
-                // Находим сообщение и его чат
                 var message = await GetMessageAsync(messageId);
                 if (message == null)
                 {
@@ -988,6 +1008,92 @@ namespace Messenger.Services
             }
         }
 
+        private string GenerateMessageId()
+        {
+            return $"{DateTime.UtcNow:yyyyMMddHHmmssfff}_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
+        }
+
+        // Вспомогательные методы поиска
+        public async Task<List<User>> SearchUsersAsync(string searchQuery)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(searchQuery))
+                    return new List<User>();
+
+                var allUsers = await GetUsersAsync();
+                var query = searchQuery.ToLowerInvariant().Trim();
+
+                return allUsers
+                    .Where(user =>
+                        (!string.IsNullOrEmpty(user.Username) && user.Username.ToLowerInvariant().Contains(query)) ||
+                        (!string.IsNullOrEmpty(user.DisplayName) && user.DisplayName.ToLowerInvariant().Contains(query)) ||
+                        (!string.IsNullOrEmpty(user.Email) && user.Email.ToLowerInvariant().Contains(query)))
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error searching users: {ex.Message}");
+                return new List<User>();
+            }
+        }
+
+        public async Task<List<Message>> SearchMessagesAsync(string chatId, string searchQuery)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                if (string.IsNullOrWhiteSpace(searchQuery))
+                    return new List<Message>();
+
+                var allMessages = await GetChatMessagesAsync(chatId, 1000); // Получаем больше сообщений для поиска
+                var query = searchQuery.ToLowerInvariant().Trim();
+
+                return allMessages
+                    .Where(message =>
+                        (!string.IsNullOrEmpty(message.Content) && message.Content.ToLowerInvariant().Contains(query)) ||
+                        (!string.IsNullOrEmpty(message.SenderName) && message.SenderName.ToLowerInvariant().Contains(query)))
+                    .OrderByDescending(m => m.Timestamp)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error searching messages in chat {chatId}: {ex.Message}");
+                return new List<Message>();
+            }
+        }
+
+        public async Task<int> GetUnreadMessagesCountAsync(string userId)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(userId))
+                    throw new ArgumentException("UserId cannot be null or empty");
+
+                var userChats = await GetUserChatsAsync(userId);
+                int totalUnread = 0;
+
+                foreach (var chat in userChats)
+                {
+                    // В реальном приложении здесь была бы более сложная логика
+                    // подсчета непрочитанных сообщений для конкретного пользователя
+                    // Для простоты считаем, что все сообщения, кроме отправленных пользователем, непрочитаны
+                    var messages = await GetChatMessagesAsync(chat.Id, 100);
+                    var unreadInChat = messages.Count(m => m.SenderId != userId && !m.IsRead);
+                    totalUnread += unreadInChat;
+                }
+
+                return totalUnread;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting unread messages count for user {userId}: {ex.Message}");
+                return 0;
+            }
+        }
+
         private async Task UpdateChatLastMessageAsync(string chatId, string lastMessage, string lastMessageSender, DateTime lastMessageTime)
         {
             try
@@ -1007,27 +1113,13 @@ namespace Messenger.Services
                 await _firebaseClient
                     .Child(chatPath)
                     .PatchAsync(updates);
+
+                Console.WriteLine($"Updated last message for chat {chatId}");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error updating last message for chat {chatId}: {ex.Message}");
             }
-        }
-
-        // Остальные методы будут реализованы позже
-        public Task<List<User>> SearchUsersAsync(string searchQuery)
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task<List<Message>> SearchMessagesAsync(string chatId, string searchQuery)
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task<int> GetUnreadMessagesCountAsync(string userId)
-        {
-            throw new NotImplementedException();
         }
     }
 }

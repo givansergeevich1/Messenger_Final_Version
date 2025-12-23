@@ -2,6 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Messenger.ViewModels;
 using Messenger.Services;
+using Messenger.Services.Interfaces;
 
 namespace Messenger
 {
@@ -18,8 +19,15 @@ namespace Messenger
 
         private void ConfigureServices(IServiceCollection services)
         {
-            // Регистрация сервисов будет добавлена позже
+            // Регистрация сервисов
+            services.AddSingleton<IAuthService, FirebaseAuthService>();
+
+            // Регистрация ViewModels
             services.AddSingleton<MainViewModel>();
+            services.AddTransient<LoginViewModel>();
+            services.AddTransient<RegisterViewModel>();
+            services.AddTransient<ChatViewModel>();
+            services.AddTransient<UserProfileViewModel>();
 
             // Регистрация главного окна
             services.AddSingleton<MainWindow>();

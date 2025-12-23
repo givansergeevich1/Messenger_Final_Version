@@ -107,26 +107,102 @@ namespace Messenger.ViewModels
                    !IsBusy;
         }
 
-        // Команды будут реализованы в следующем коммите
+        // Команды аутентификации
         public ICommand LoginCommand { get; private set; } = null!;
         public ICommand NavigateToRegisterCommand { get; private set; } = null!;
         public ICommand ResetPasswordCommand { get; private set; } = null!;
 
         private async Task LoginAsync()
         {
-            // Будет реализовано в следующем коммите
-            await Task.CompletedTask;
+            ClearErrors();
+
+            if (!CanLogin())
+            {
+                SetError("Пожалуйста, заполните все поля корректно");
+                return;
+            }
+
+            try
+            {
+                await ExecuteWithBusyStateAsync(async () =>
+                {
+                    // Сохраняем учетные данные, если выбрано "Запомнить меня"
+                    await SaveCredentialsAsync();
+
+                    // Выполняем вход
+                    var user = await _authService.LoginAsync(Email, Password);
+
+                    if (user == null)
+                    {
+                        SetError("Неверный email или пароль");
+                        return;
+                    }
+
+                    // Очищаем поля после успешного входа
+                    Password = string.Empty;
+
+                    // Навигация будет выполнена через MainViewModel
+                    ErrorHandler.ShowInfoMessage($"Добро пожаловать, {user.DisplayName}!", "Успешный вход");
+                });
+            }
+            catch (Exception ex)
+            {
+                SetError(ErrorHandler.GetUserFriendlyMessage(ex));
+                ErrorHandler.LogException(ex, "LoginAsync");
+            }
         }
 
         private void NavigateToRegister()
         {
-            // Будет реализовано в следующем коммите
+            try
+            {
+                ParentViewModel?.NavigateToRegisterCommand?.Execute(null);
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "NavigateToRegister");
+            }
         }
 
         private async Task ResetPasswordAsync()
         {
-            // Будет реализовано в следующем коммите
-            await Task.CompletedTask;
+            if (string.IsNullOrWhiteSpace(Email) || !Email.IsValidEmail())
+            {
+                SetError("Введите корректный email для восстановления пароля");
+                return;
+            }
+
+            try
+            {
+                var result = await ErrorHandler.ShowConfirmationMessage(
+                    $"Отправить инструкции по восстановлению пароля на {Email}?",
+                    "Восстановление пароля"
+                );
+
+                if (!result) return;
+
+                await ExecuteWithBusyStateAsync(async () =>
+                {
+                    var success = await _authService.ResetPasswordAsync(Email);
+
+                    if (success)
+                    {
+                        ErrorHandler.ShowInfoMessage(
+                            "Инструкции по восстановлению пароля отправлены на ваш email",
+                            "Письмо отправлено"
+                        );
+                    }
+                    else
+                    {
+                        SetError("Не удалось отправить письмо для восстановления пароля");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                SetError(ErrorHandler.GetUserFriendlyMessage(ex));
+                ErrorHandler.LogException(ex, "ResetPasswordAsync");
+            }
         }
 
         private void ClearErrors()

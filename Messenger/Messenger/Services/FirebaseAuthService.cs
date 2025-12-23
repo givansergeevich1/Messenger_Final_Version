@@ -12,14 +12,234 @@ namespace Messenger.Services
     {
         private readonly HttpClient _httpClient;
         private User? _currentUser;
+        private bool _initialized = false;
 
-        public User? CurrentUser => _currentUser;
+        public User? CurrentUser
+        {
+            get
+            {
+                if (!_initialized)
+                {
+                    InitializeAsync().ConfigureAwait(false);
+                }
+                return _currentUser;
+            }
+            private set => _currentUser = value;
+        }
+
         public event EventHandler<AuthStateChangedEventArgs>? AuthStateChanged;
 
         public FirebaseAuthService()
         {
             _httpClient = new HttpClient();
             _httpClient.BaseAddress = new Uri("https://identitytoolkit.googleapis.com/v1/");
+
+            // Инициализируем при создании сервиса
+            InitializeAsync().ConfigureAwait(false);
+        }
+
+        private async Task InitializeAsync()
+        {
+            if (_initialized) return;
+
+            try
+            {
+                // Проверяем, есть ли сохраненный токен
+                var authToken = await SecureStorage.GetAsync("auth_token");
+                var userId = await SecureStorage.GetAsync("user_id");
+
+                if (!string.IsNullOrEmpty(authToken) && !string.IsNullOrEmpty(userId))
+                {
+                    // Валидируем токен
+                    var isValid = await ValidateTokenAsync(authToken);
+
+                    if (isValid)
+                    {
+                        // Получаем информацию о пользователе
+                        var userInfo = await GetUserInfoAsync(authToken);
+
+                        if (userInfo != null)
+                        {
+                            _currentUser = new User(
+                                userInfo.Users[0].LocalId,
+                                userInfo.Users[0].Email,
+                                userInfo.Users[0].DisplayName ?? userInfo.Users[0].Email.Split('@')[0]
+                            )
+                            {
+                                DisplayName = userInfo.Users[0].DisplayName ?? userInfo.Users[0].Email.Split('@')[0],
+                                PhotoUrl = userInfo.Users[0].PhotoUrl ?? string.Empty
+                            };
+
+                            OnAuthStateChanged(_currentUser);
+                        }
+                    }
+                    else
+                    {
+                        // Токен невалиден, очищаем данные
+                        await ClearLocalAuthData();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка инициализации AuthService: {ex.Message}");
+            }
+            finally
+            {
+                _initialized = true;
+            }
+        }
+
+        public async Task<bool> IsAuthenticatedAsync()
+        {
+            await InitializeAsync();
+            return _currentUser != null;
+        }
+
+        public async Task<User?> GetCurrentUserAsync()
+        {
+            await InitializeAsync();
+            return _currentUser;
+        }
+
+        public async Task<bool> UpdateUserProfileAsync(User user)
+        {
+            try
+            {
+                var authToken = await SecureStorage.GetAsync("auth_token");
+
+                if (string.IsNullOrEmpty(authToken))
+                    throw new Exception("Пользователь не авторизован");
+
+                var requestData = new
+                {
+                    idToken = authToken,
+                    displayName = user.DisplayName,
+                    photoUrl = user.PhotoUrl,
+                    returnSecureToken = true
+                };
+
+                var content = new StringContent(
+                    JsonConvert.SerializeObject(requestData),
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+
+                var response = await _httpClient.PostAsync(
+                    $"accounts:update?key={FirebaseConfig.ApiKey}",
+                    content
+                );
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    var result = JsonConvert.DeserializeObject<FirebaseAuthResponse>(responseContent);
+
+                    if (result != null)
+                    {
+                        // Обновляем локальные данные
+                        if (_currentUser != null)
+                        {
+                            _currentUser.DisplayName = user.DisplayName;
+                            _currentUser.PhotoUrl = user.PhotoUrl;
+                        }
+
+                        // Обновляем токен
+                        await SecureStorage.SetAsync("auth_token", result.IdToken);
+
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Ошибка обновления профиля: {ex.Message}", ex);
+            }
+        }
+
+        private async Task<bool> ValidateTokenAsync(string token)
+        {
+            try
+            {
+                var requestData = new
+                {
+                    idToken = token
+                };
+
+                var content = new StringContent(
+                    JsonConvert.SerializeObject(requestData),
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+
+                var response = await _httpClient.PostAsync(
+                    $"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={FirebaseConfig.ApiKey}",
+                    content
+                );
+
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task<UserInfoResponse?> GetUserInfoAsync(string token)
+        {
+            try
+            {
+                var requestData = new
+                {
+                    idToken = token
+                };
+
+                var content = new StringContent(
+                    JsonConvert.SerializeObject(requestData),
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+
+                var response = await _httpClient.PostAsync(
+                    $"https://identitytoolkit.googleapis.com/v1/accounts:lookup?key={FirebaseConfig.ApiKey}",
+                    content
+                );
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    return JsonConvert.DeserializeObject<UserInfoResponse>(responseContent);
+                }
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private class UserInfoResponse
+        {
+            [JsonProperty("users")]
+            public List<UserInfo> Users { get; set; } = new List<UserInfo>();
+        }
+
+        private class UserInfo
+        {
+            [JsonProperty("localId")]
+            public string LocalId { get; set; } = string.Empty;
+
+            [JsonProperty("email")]
+            public string Email { get; set; } = string.Empty;
+
+            [JsonProperty("displayName")]
+            public string? DisplayName { get; set; }
+
+            [JsonProperty("photoUrl")]
+            public string? PhotoUrl { get; set; }
         }
 
         public async Task<User?> LoginAsync(string email, string password)
@@ -94,7 +314,6 @@ namespace Messenger.Services
         {
             try
             {
-                // Валидация входных данных
                 if (string.IsNullOrWhiteSpace(email) ||
                     string.IsNullOrWhiteSpace(username) ||
                     string.IsNullOrWhiteSpace(password))
@@ -117,7 +336,6 @@ namespace Messenger.Services
                     throw new ArgumentException($"Пароль должен содержать не менее {AppConstants.MinPasswordLength} символов");
                 }
 
-                // Подготовка данных для регистрации
                 var requestData = new
                 {
                     email = email,
@@ -132,7 +350,6 @@ namespace Messenger.Services
                     "application/json"
                 );
 
-                // Отправка запроса на регистрацию
                 var response = await _httpClient.PostAsync(
                     $"accounts:signUp?key={FirebaseConfig.ApiKey}",
                     content
@@ -145,7 +362,6 @@ namespace Messenger.Services
 
                     if (result != null && !string.IsNullOrEmpty(result.LocalId))
                     {
-                        // Создаем объект пользователя
                         _currentUser = new User(result.LocalId, email, username)
                         {
                             DisplayName = username,
@@ -154,29 +370,21 @@ namespace Messenger.Services
                             IsOnline = true
                         };
 
-                        // Сохраняем токены
                         await SecureStorage.SetAsync("auth_token", result.IdToken);
                         await SecureStorage.SetAsync("refresh_token", result.RefreshToken);
                         await SecureStorage.SetAsync("user_id", result.LocalId);
 
-                        // Уведомляем об изменении состояния аутентификации
                         OnAuthStateChanged(_currentUser);
-
-                        // Здесь будет вызов для создания записи пользователя в базе данных
-                        // (будет добавлен позже при реализации DatabaseService)
-
                         return _currentUser;
                     }
                 }
                 else
                 {
-                    // Обработка ошибок Firebase
                     var errorContent = await response.Content.ReadAsStringAsync();
                     var error = JsonConvert.DeserializeObject<FirebaseErrorResponse>(errorContent);
 
                     string errorMessage = error?.Error?.Message ?? "Ошибка регистрации";
 
-                    // Перевод стандартных ошибок Firebase
                     if (errorMessage.Contains("EMAIL_EXISTS"))
                     {
                         errorMessage = "Пользователь с таким email уже существует";
@@ -205,12 +413,10 @@ namespace Messenger.Services
         {
             try
             {
-                // Получаем refresh token
                 var refreshToken = await SecureStorage.GetAsync("refresh_token");
 
                 if (!string.IsNullOrEmpty(refreshToken))
                 {
-                    // Отзываем refresh token на сервере Firebase
                     var requestData = new
                     {
                         token = refreshToken
@@ -230,18 +436,12 @@ namespace Messenger.Services
             }
             catch (Exception ex)
             {
-                // Игнорируем ошибки при отзыве токена
                 Console.WriteLine($"Error revoking token: {ex.Message}");
             }
             finally
             {
-                // Всегда очищаем локальные данные
                 await ClearLocalAuthData();
-
-                // Сбрасываем текущего пользователя
                 _currentUser = null;
-
-                // Уведомляем об изменении состояния
                 OnAuthStateChanged(null);
             }
 
@@ -293,7 +493,6 @@ namespace Messenger.Services
 
                     string errorMessage = error?.Error?.Message ?? "Ошибка восстановления пароля";
 
-                    // Перевод стандартных ошибок Firebase
                     if (errorMessage.Contains("EMAIL_NOT_FOUND"))
                     {
                         errorMessage = "Пользователь с таким email не найден";
@@ -312,17 +511,20 @@ namespace Messenger.Services
             }
         }
 
+        protected virtual void OnAuthStateChanged(User? user)
+        {
+            AuthStateChanged?.Invoke(this, new AuthStateChangedEventArgs(user));
+        }
+
         private async Task ClearLocalAuthData()
         {
             try
             {
-                // Очищаем все сохраненные токены и данные
                 SecureStorage.Remove("auth_token");
                 SecureStorage.Remove("refresh_token");
                 SecureStorage.Remove("user_id");
                 SecureStorage.Remove("remember_me");
 
-                // Также удаляем данные из памяти
                 await Task.CompletedTask;
             }
             catch (Exception ex)
@@ -331,28 +533,6 @@ namespace Messenger.Services
             }
         }
 
-        protected virtual void OnAuthStateChanged(User? user)
-        {
-            AuthStateChanged?.Invoke(this, new AuthStateChangedEventArgs(user));
-        }
-
-        // Остальные методы будут реализованы позже
-        public Task<bool> IsAuthenticatedAsync()
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task<User?> GetCurrentUserAsync()
-        {
-            throw new NotImplementedException();
-        }
-
-        public Task<bool> UpdateUserProfileAsync(User user)
-        {
-            throw new NotImplementedException();
-        }
-
-        // Вспомогательные классы для десериализации
         private class FirebaseAuthResponse
         {
             [JsonProperty("kind")]
@@ -365,7 +545,7 @@ namespace Messenger.Services
             public string Email { get; set; } = string.Empty;
 
             [JsonProperty("displayName")]
-            public string DisplayName { get; set; } = string.Empty;
+            public string? DisplayName { get; set; }
 
             [JsonProperty("idToken")]
             public string IdToken { get; set; } = string.Empty;

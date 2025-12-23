@@ -19,6 +19,7 @@ namespace Messenger.ViewModels
         private MainViewModel? _parentViewModel;
         private ChatRoom? _selectedChat;
         private string _searchQuery = string.Empty;
+        private ObservableCollection<string> _selectedUsersForNewChat = new ObservableCollection<string>();
 
         [ObservableProperty]
         private ObservableCollection<ChatRoom> _chats = new ObservableCollection<ChatRoom>();
@@ -70,6 +71,9 @@ namespace Messenger.ViewModels
                 {
                     LoadChatMessagesAsync(value.Id).ConfigureAwait(false);
                     SubscribeToChatMessages(value.Id);
+
+                    // Помечаем сообщения как прочитанные
+                    MarkMessagesAsReadAsync(value.Id).ConfigureAwait(false);
                 }
             }
         }
@@ -86,6 +90,12 @@ namespace Messenger.ViewModels
             }
         }
 
+        public ObservableCollection<string> SelectedUsersForNewChat
+        {
+            get => _selectedUsersForNewChat;
+            set => SetProperty(ref _selectedUsersForNewChat, value);
+        }
+
         private void InitializeCommands()
         {
             SendMessageCommand = new AsyncRelayCommand(SendMessageAsync, CanSendMessage);
@@ -96,6 +106,8 @@ namespace Messenger.ViewModels
             ClearSearchCommand = new RelayCommand(ClearSearch);
             RefreshChatsCommand = new AsyncRelayCommand(RefreshChatsAsync);
             LoadMoreMessagesCommand = new AsyncRelayCommand(LoadMoreMessagesAsync);
+            SelectUserForChatCommand = new RelayCommand<string>(SelectUserForChat);
+            RemoveUserFromSelectionCommand = new RelayCommand<string>(RemoveUserFromSelection);
         }
 
         private async Task LoadDataAsync()
@@ -190,6 +202,28 @@ namespace Messenger.ViewModels
             }
         }
 
+        private async Task MarkMessagesAsReadAsync(string chatId)
+        {
+            try
+            {
+                // Помечаем все непрочитанные сообщения в чате как прочитанные
+                foreach (var message in Messages.Where(m => !m.IsRead && m.SenderId != ParentViewModel?.CurrentUser?.Id))
+                {
+                    await _databaseService.MarkMessageAsReadAsync(message.Id);
+                }
+
+                // Обновляем счетчик непрочитанных сообщений
+                if (ParentViewModel != null)
+                {
+                    await ParentViewModel.LoadUnreadMessagesCountAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogException(ex, "MarkMessagesAsReadAsync");
+            }
+        }
+
         private void SubscribeToUserChats(string userId)
         {
             try
@@ -216,25 +250,83 @@ namespace Messenger.ViewModels
 
         private void OnChatUpdated(ChatRoom chat)
         {
-            // Будет реализовано в следующем коммите
+            try
+            {
+                // Обновляем или добавляем чат в список
+                var existingChat = Chats.FirstOrDefault(c => c.Id == chat.Id);
+
+                if (existingChat != null)
+                {
+                    // Обновляем существующий чат
+                    var index = Chats.IndexOf(existingChat);
+                    Chats[index] = chat;
+
+                    // Если это выбранный чат, обновляем его
+                    if (SelectedChat?.Id == chat.Id)
+                    {
+                        SelectedChat = chat;
+                    }
+                }
+                else
+                {
+                    // Добавляем новый чат
+                    Chats.Add(chat);
+                }
+
+                // Сортируем чаты по времени последнего сообщения
+                var sortedChats = Chats.OrderByDescending(c => c.LastMessageTime).ToList();
+                Chats.Clear();
+                foreach (var sortedChat in sortedChats)
+                {
+                    Chats.Add(sortedChat);
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogException(ex, "OnChatUpdated");
+            }
         }
 
         private void OnNewMessage(Message message)
         {
-            // Будет реализовано в следующем коммите
+            try
+            {
+                // Добавляем сообщение только если оно из выбранного чата
+                if (SelectedChat?.Id == message.ChatId)
+                {
+                    Messages.Add(message);
+                    ScrollToLastMessage();
+
+                    // Помечаем как прочитанное, если оно не от текущего пользователя
+                    if (message.SenderId != ParentViewModel?.CurrentUser?.Id)
+                    {
+                        _databaseService.MarkMessageAsReadAsync(message.Id).ConfigureAwait(false);
+                    }
+                }
+
+                // Обновляем счетчик непрочитанных сообщений
+                if (ParentViewModel != null && message.SenderId != ParentViewModel.CurrentUser?.Id)
+                {
+                    ParentViewModel.LoadUnreadMessagesCountAsync().ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogException(ex, "OnNewMessage");
+            }
         }
 
         private void FilterChats()
         {
-            // Будет реализовано в следующем коммите
+            // Реализация будет в UI
         }
 
         private void ScrollToLastMessage()
         {
-            // Будет реализовано в UI слое
+            // Реализация будет в UI
         }
 
-        // Команды будут реализованы в следующем коммите
+        // Команды отправки сообщений и управления чатами
         public ICommand SendMessageCommand { get; private set; } = null!;
         public ICommand StartNewChatCommand { get; private set; } = null!;
         public ICommand CreateChatCommand { get; private set; } = null!;
@@ -243,6 +335,8 @@ namespace Messenger.ViewModels
         public ICommand ClearSearchCommand { get; private set; } = null!;
         public ICommand RefreshChatsCommand { get; private set; } = null!;
         public ICommand LoadMoreMessagesCommand { get; private set; } = null!;
+        public ICommand SelectUserForChatCommand { get; private set; } = null!;
+        public ICommand RemoveUserFromSelectionCommand { get; private set; } = null!;
 
         private bool CanSendMessage()
         {
@@ -255,45 +349,150 @@ namespace Messenger.ViewModels
         {
             return !string.IsNullOrWhiteSpace(NewChatName) &&
                    NewChatName.Length <= AppConstants.MaxChatNameLength &&
+                   (IsGroupChat || SelectedUsersForNewChat.Count > 0) &&
                    !IsBusy;
         }
 
         private async Task SendMessageAsync()
         {
-            // Будет реализовано в следующем коммите
-            await Task.CompletedTask;
+            if (SelectedChat == null || ParentViewModel?.CurrentUser == null) return;
+
+            var messageText = NewMessageText.Trim();
+            if (string.IsNullOrWhiteSpace(messageText)) return;
+
+            try
+            {
+                await ExecuteWithBusyStateAsync(async () =>
+                {
+                    // Отправляем сообщение
+                    var message = await _databaseService.SendMessageAsync(
+                        SelectedChat.Id,
+                        ParentViewModel.CurrentUser.Id,
+                        ParentViewModel.CurrentUser.DisplayName,
+                        messageText
+                    );
+
+                    // Очищаем поле ввода
+                    NewMessageText = string.Empty;
+
+                    // Добавляем сообщение в список
+                    Messages.Add(message);
+                    ScrollToLastMessage();
+                });
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "SendMessageAsync");
+            }
         }
 
         private void StartNewChat()
         {
-            // Будет реализовано в следующем коммите
+            IsCreatingNewChat = true;
+            NewChatName = string.Empty;
+            SelectedUsersForNewChat.Clear();
+            IsGroupChat = false;
         }
 
         private async Task CreateChatAsync()
         {
-            // Будет реализовано в следующем коммите
-            await Task.CompletedTask;
+            if (ParentViewModel?.CurrentUser == null) return;
+
+            try
+            {
+                await ExecuteWithBusyStateAsync(async () =>
+                {
+                    // Собираем список участников
+                    var participantIds = SelectedUsersForNewChat.ToList();
+
+                    // Создаем чат
+                    var newChat = await _databaseService.CreateChatAsync(
+                        NewChatName,
+                        ParentViewModel.CurrentUser.Id,
+                        participantIds,
+                        IsGroupChat
+                    );
+
+                    // Закрываем диалог создания чата
+                    CancelNewChat();
+
+                    // Выбираем новый чат
+                    SelectedChat = newChat;
+
+                    // Обновляем список чатов
+                    await RefreshChatsAsync();
+
+                    ErrorHandler.ShowInfoMessage($"Чат '{NewChatName}' создан", "Успех");
+                });
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.HandleException(ex, "CreateChatAsync");
+            }
         }
 
         private void CancelNewChat()
         {
-            // Будет реализовано в следующем коммите
+            IsCreatingNewChat = false;
+            NewChatName = string.Empty;
+            SelectedUsersForNewChat.Clear();
+            IsGroupChat = false;
         }
 
         private void ToggleSearch()
         {
-            // Будет реализовано в следующем коммите
+            IsSearchVisible = !IsSearchVisible;
+            if (!IsSearchVisible)
+            {
+                SearchQuery = string.Empty;
+            }
         }
 
         private void ClearSearch()
         {
-            // Будет реализовано в следующем коммите
+            SearchQuery = string.Empty;
         }
 
         private async Task LoadMoreMessagesAsync()
         {
-            // Будет реализовано в следующем коммите
-            await Task.CompletedTask;
+            if (SelectedChat == null) return;
+
+            try
+            {
+                // Загружаем дополнительные сообщения
+                var currentCount = Messages.Count;
+                var moreMessages = await _databaseService.GetChatMessagesAsync(SelectedChat.Id, currentCount + 50);
+
+                if (moreMessages.Count > currentCount)
+                {
+                    Messages.Clear();
+                    foreach (var message in moreMessages)
+                    {
+                        Messages.Add(message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ErrorHandler.LogException(ex, "LoadMoreMessagesAsync");
+            }
+        }
+
+        private void SelectUserForChat(string? userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return;
+
+            if (!SelectedUsersForNewChat.Contains(userId))
+            {
+                SelectedUsersForNewChat.Add(userId);
+            }
+        }
+
+        private void RemoveUserFromSelection(string? userId)
+        {
+            if (string.IsNullOrEmpty(userId)) return;
+
+            SelectedUsersForNewChat.Remove(userId);
         }
     }
 }

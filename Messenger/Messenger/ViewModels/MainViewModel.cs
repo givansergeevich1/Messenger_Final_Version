@@ -49,17 +49,37 @@ namespace Messenger.ViewModels
         public ObservableObject? CurrentViewModel
         {
             get => _currentViewModel;
-            set => SetProperty(ref _currentViewModel, value);
+            set => SetProperty(ref _currentViewModel, value, onChanged: OnCurrentViewModelChanged);
+        }
+
+        private void OnCurrentViewModelChanged()
+        {
+            // Обновляем заголовок при изменении текущей ViewModel
+            UpdateAppTitle();
+        }
+
+        private void UpdateAppTitle()
+        {
+            var suffix = CurrentViewModel switch
+            {
+                LoginViewModel => " - Вход",
+                RegisterViewModel => " - Регистрация",
+                ChatViewModel => " - Чат",
+                UserProfileViewModel => " - Профиль",
+                _ => ""
+            };
+
+            AppTitle = $"Messenger{suffix}";
         }
 
         private void InitializeCommands()
         {
-            NavigateToLoginCommand = new RelayCommand(NavigateToLogin);
-            NavigateToRegisterCommand = new RelayCommand(NavigateToRegister);
-            NavigateToChatCommand = new RelayCommand(NavigateToChat);
-            NavigateToProfileCommand = new RelayCommand(NavigateToProfile);
-            LogoutCommand = new AsyncRelayCommand(LogoutAsync);
-            RefreshCommand = new AsyncRelayCommand(RefreshAsync);
+            NavigateToLoginCommand = CreateCommand(NavigateToLogin, () => !IsBusy);
+            NavigateToRegisterCommand = CreateCommand(NavigateToRegister, () => !IsBusy);
+            NavigateToChatCommand = CreateCommand(NavigateToChat, () => IsAuthenticated && !IsBusy);
+            NavigateToProfileCommand = CreateCommand(NavigateToProfile, () => IsAuthenticated && !IsBusy);
+            LogoutCommand = CreateAsyncCommand(LogoutAsync, () => IsAuthenticated && !IsBusy);
+            RefreshCommand = CreateAsyncCommand(RefreshAsync, () => !IsBusy);
         }
 
         private void SubscribeToAuthEvents()
@@ -69,33 +89,31 @@ namespace Messenger.ViewModels
 
         private async void OnAuthStateChanged(object? sender, AuthStateChangedEventArgs e)
         {
-            IsAuthenticated = e.IsAuthenticated;
-            CurrentUser = e.User;
-
-            if (IsAuthenticated && CurrentUser != null)
+            await ExecuteWithBusyStateAsync(async () =>
             {
-                await ExecuteWithBusyStateAsync(async () =>
+                IsAuthenticated = e.IsAuthenticated;
+                CurrentUser = e.User;
+
+                if (IsAuthenticated && CurrentUser != null)
                 {
                     await UpdateUserStatusAsync(true);
                     await LoadUnreadMessagesCountAsync();
 
                     // Автоматически переходим на страницу чатов после входа
                     NavigateToChat();
-                });
-            }
-            else
-            {
-                // Переходим на страницу входа при выходе
-                NavigateToLogin();
-            }
+                }
+                else
+                {
+                    // Переходим на страницу входа при выходе
+                    NavigateToLogin();
+                }
+            }, "Обновление состояния аутентификации...");
         }
 
         private async Task InitializeAsync()
         {
-            try
+            await ExecuteWithBusyStateAsync(async () =>
             {
-                IsBusy = true;
-
                 // Проверяем текущее состояние аутентификации
                 IsAuthenticated = await _authService.IsAuthenticatedAsync();
                 CurrentUser = await _authService.GetCurrentUserAsync();
@@ -110,16 +128,7 @@ namespace Messenger.ViewModels
                 {
                     NavigateToLogin();
                 }
-            }
-            catch (Exception ex)
-            {
-                ErrorHandler.HandleException(ex, "MainViewModel initialization");
-                NavigateToLogin();
-            }
-            finally
-            {
-                IsBusy = false;
-            }
+            }, "Инициализация приложения...");
         }
 
         private async Task UpdateUserStatusAsync(bool isOnline)
@@ -136,7 +145,7 @@ namespace Messenger.ViewModels
             }
             catch (Exception ex)
             {
-                ErrorHandler.LogException(ex, "UpdateUserStatusAsync");
+                SetStatus($"Ошибка обновления статуса: {ex.Message}", true);
             }
         }
 
@@ -150,7 +159,7 @@ namespace Messenger.ViewModels
             }
             catch (Exception ex)
             {
-                ErrorHandler.LogException(ex, "LoadUnreadMessagesCountAsync");
+                SetStatus($"Ошибка загрузки счетчика сообщений: {ex.Message}", true);
                 UnreadMessagesCount = 0;
             }
         }
@@ -172,12 +181,11 @@ namespace Messenger.ViewModels
                 {
                     loginViewModel.ParentViewModel = this;
                     CurrentViewModel = loginViewModel;
-                    AppTitle = "Вход - Messenger";
                 }
             }
             catch (Exception ex)
             {
-                ErrorHandler.HandleException(ex, "NavigateToLogin");
+                SetStatus($"Ошибка перехода к входу: {ex.Message}", true);
             }
         }
 
@@ -190,12 +198,11 @@ namespace Messenger.ViewModels
                 {
                     registerViewModel.ParentViewModel = this;
                     CurrentViewModel = registerViewModel;
-                    AppTitle = "Регистрация - Messenger";
                 }
             }
             catch (Exception ex)
             {
-                ErrorHandler.HandleException(ex, "NavigateToRegister");
+                SetStatus($"Ошибка перехода к регистрации: {ex.Message}", true);
             }
         }
 
@@ -208,7 +215,6 @@ namespace Messenger.ViewModels
                 {
                     chatViewModel.ParentViewModel = this;
                     CurrentViewModel = chatViewModel;
-                    AppTitle = $"Чат - Messenger";
 
                     // Обновляем счетчик непрочитанных сообщений
                     LoadUnreadMessagesCountAsync().ConfigureAwait(false);
@@ -216,7 +222,7 @@ namespace Messenger.ViewModels
             }
             catch (Exception ex)
             {
-                ErrorHandler.HandleException(ex, "NavigateToChat");
+                SetStatus($"Ошибка перехода к чату: {ex.Message}", true);
             }
         }
 
@@ -229,55 +235,59 @@ namespace Messenger.ViewModels
                 {
                     profileViewModel.ParentViewModel = this;
                     CurrentViewModel = profileViewModel;
-                    AppTitle = $"Профиль - Messenger";
                 }
             }
             catch (Exception ex)
             {
-                ErrorHandler.HandleException(ex, "NavigateToProfile");
+                SetStatus($"Ошибка перехода к профилю: {ex.Message}", true);
             }
         }
 
         private async Task LogoutAsync()
         {
-            try
+            await ExecuteWithBusyStateAsync(async () =>
             {
-                if (CurrentUser != null)
+                try
                 {
-                    await UpdateUserStatusAsync(false);
+                    if (CurrentUser != null)
+                    {
+                        await UpdateUserStatusAsync(false);
+                    }
+
+                    await _authService.LogoutAsync();
+                    SetStatus("Выход выполнен успешно");
                 }
-
-                await _authService.LogoutAsync();
-
-                // Navigation will be handled by AuthStateChanged event
-            }
-            catch (Exception ex)
-            {
-                ErrorHandler.HandleException(ex, "Logout");
-            }
+                catch (Exception ex)
+                {
+                    SetStatus($"Ошибка выхода: {ex.Message}", true);
+                }
+            }, "Выход из системы...");
         }
 
         private async Task RefreshAsync()
         {
-            try
+            await ExecuteWithBusyStateAsync(async () =>
             {
-                await LoadUnreadMessagesCountAsync();
-
-                if (CurrentViewModel is ChatViewModel chatViewModel)
+                try
                 {
-                    await chatViewModel.RefreshChatsAsync();
-                }
-                else if (CurrentViewModel is UserProfileViewModel profileViewModel)
-                {
-                    await profileViewModel.LoadUserDataAsync();
-                }
+                    await LoadUnreadMessagesCountAsync();
 
-                ErrorHandler.ShowInfoMessage("Данные обновлены", "Обновление");
-            }
-            catch (Exception ex)
-            {
-                ErrorHandler.HandleException(ex, "Refresh");
-            }
+                    if (CurrentViewModel is ChatViewModel chatViewModel)
+                    {
+                        await chatViewModel.RefreshChatsAsync();
+                    }
+                    else if (CurrentViewModel is UserProfileViewModel profileViewModel)
+                    {
+                        await profileViewModel.LoadUserDataAsync();
+                    }
+
+                    SetStatus("Данные обновлены");
+                }
+                catch (Exception ex)
+                {
+                    SetStatus($"Ошибка обновления: {ex.Message}", true);
+                }
+            }, "Обновление данных...");
         }
     }
 }

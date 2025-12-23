@@ -586,38 +586,273 @@ namespace Messenger.Services
             }
         }
 
-        // Методы для работы с сообщениями (будут реализованы в следующих коммитах)
-        public Task<Message?> GetMessageAsync(string messageId)
+        // Методы для работы с сообщениями
+        public async Task<Message?> GetMessageAsync(string messageId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(messageId))
+                    throw new ArgumentException("MessageId cannot be null or empty");
+
+                // Поиск сообщения по всем чатам
+                var chatsPath = GetFirebasePath(FirebaseConfig.ChatsPath);
+                var chatsData = await _firebaseClient
+                    .Child(chatsPath)
+                    .OnceAsync<Dictionary<string, object>>();
+
+                foreach (var chatSnapshot in chatsData)
+                {
+                    var chatId = chatSnapshot.Key;
+                    var messagesPath = GetFirebasePath(FirebaseConfig.MessagesPath, chatId, messageId);
+
+                    try
+                    {
+                        var messageData = await _firebaseClient
+                            .Child(messagesPath)
+                            .OnceSingleAsync<Dictionary<string, object>>();
+
+                        if (messageData != null)
+                        {
+                            messageData["id"] = messageId;
+                            messageData["chatId"] = chatId;
+                            return Message.FromDictionary(messageData);
+                        }
+                    }
+                    catch
+                    {
+                        // Продолжаем поиск в следующем чате
+                        continue;
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting message {messageId}: {ex.Message}");
+                return null;
+            }
         }
 
-        public Task<List<Message>> GetChatMessagesAsync(string chatId, int limit = 50)
+        public async Task<List<Message>> GetChatMessagesAsync(string chatId, int limit = 50)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                var messagesPath = GetFirebasePath(FirebaseConfig.MessagesPath, chatId);
+                var messagesData = await _firebaseClient
+                    .Child(messagesPath)
+                    .OrderByKey()
+                    .LimitToLast(limit)
+                    .OnceAsync<Dictionary<string, object>>();
+
+                var messages = new List<Message>();
+
+                foreach (var messageSnapshot in messagesData)
+                {
+                    try
+                    {
+                        var messageData = messageSnapshot.Object;
+                        messageData["id"] = messageSnapshot.Key;
+                        messageData["chatId"] = chatId;
+
+                        var message = Message.FromDictionary(messageData);
+                        messages.Add(message);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error parsing message {messageSnapshot.Key}: {ex.Message}");
+                    }
+                }
+
+                // Сортируем по времени (сначала старые)
+                return messages
+                    .OrderBy(m => m.Timestamp)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting messages for chat {chatId}: {ex.Message}");
+                return new List<Message>();
+            }
         }
 
-        public Task<Message> SendMessageAsync(string chatId, string senderId, string senderName, string content)
+        public async Task<Message> SendMessageAsync(string chatId, string senderId, string senderName, string content)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    throw new ArgumentException("ChatId cannot be null or empty");
+
+                if (string.IsNullOrEmpty(senderId))
+                    throw new ArgumentException("SenderId cannot be null or empty");
+
+                if (string.IsNullOrEmpty(senderName))
+                    throw new ArgumentException("SenderName cannot be null or empty");
+
+                if (string.IsNullOrEmpty(content))
+                    throw new ArgumentException("Content cannot be null or empty");
+
+                if (content.Length > AppConstants.MaxMessageLength)
+                {
+                    content = content.Truncate(AppConstants.MaxMessageLength);
+                }
+
+                // Создаем новое сообщение
+                var messageId = Guid.NewGuid().ToString();
+                var newMessage = new Message(senderId, senderName, content, chatId)
+                {
+                    Id = messageId,
+                    Timestamp = DateTime.UtcNow,
+                    IsRead = false
+                };
+
+                // Сохраняем сообщение в базе данных
+                var messagePath = GetFirebasePath(FirebaseConfig.MessagesPath, chatId, messageId);
+                var messageDict = newMessage.ToDictionary();
+
+                await _firebaseClient
+                    .Child(messagePath)
+                    .PutAsync(messageDict);
+
+                // Обновляем информацию о последнем сообщении в чате
+                await UpdateChatLastMessageAsync(chatId, content, senderName, newMessage.Timestamp);
+
+                Console.WriteLine($"Message {messageId} sent to chat {chatId}");
+                return newMessage;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error sending message to chat {chatId}: {ex.Message}");
+                throw;
+            }
         }
 
-        public Task<bool> UpdateMessageAsync(Message message)
+        public async Task<bool> UpdateMessageAsync(Message message)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (message == null)
+                    throw new ArgumentNullException(nameof(message));
+
+                if (string.IsNullOrEmpty(message.Id))
+                    throw new ArgumentException("Message Id cannot be null or empty");
+
+                if (string.IsNullOrEmpty(message.ChatId))
+                    throw new ArgumentException("Message ChatId cannot be null or empty");
+
+                var messagePath = GetFirebasePath(FirebaseConfig.MessagesPath, message.ChatId, message.Id);
+                var messageDict = message.ToDictionary();
+
+                await _firebaseClient
+                    .Child(messagePath)
+                    .PutAsync(messageDict);
+
+                Console.WriteLine($"Message {message.Id} updated successfully");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating message {message?.Id}: {ex.Message}");
+                return false;
+            }
         }
 
-        public Task<bool> DeleteMessageAsync(string messageId)
+        public async Task<bool> DeleteMessageAsync(string messageId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(messageId))
+                    throw new ArgumentException("MessageId cannot be null or empty");
+
+                // Находим сообщение и его чат
+                var message = await GetMessageAsync(messageId);
+                if (message == null)
+                {
+                    Console.WriteLine($"Message {messageId} not found");
+                    return false;
+                }
+
+                var messagePath = GetFirebasePath(FirebaseConfig.MessagesPath, message.ChatId, messageId);
+
+                await _firebaseClient
+                    .Child(messagePath)
+                    .DeleteAsync();
+
+                Console.WriteLine($"Message {messageId} deleted successfully");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting message {messageId}: {ex.Message}");
+                return false;
+            }
         }
 
-        public Task<bool> MarkMessageAsReadAsync(string messageId)
+        public async Task<bool> MarkMessageAsReadAsync(string messageId)
         {
-            throw new NotImplementedException();
+            try
+            {
+                if (string.IsNullOrEmpty(messageId))
+                    throw new ArgumentException("MessageId cannot be null or empty");
+
+                var message = await GetMessageAsync(messageId);
+                if (message == null)
+                {
+                    Console.WriteLine($"Message {messageId} not found");
+                    return false;
+                }
+
+                var messagePath = GetFirebasePath(FirebaseConfig.MessagesPath, message.ChatId, messageId);
+
+                var updates = new Dictionary<string, object>
+                {
+                    { "isRead", true }
+                };
+
+                await _firebaseClient
+                    .Child(messagePath)
+                    .PatchAsync(updates);
+
+                Console.WriteLine($"Message {messageId} marked as read");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error marking message {messageId} as read: {ex.Message}");
+                return false;
+            }
         }
 
-        // Realtime listeners (будут реализованы в следующих коммитах)
+        private async Task UpdateChatLastMessageAsync(string chatId, string lastMessage, string lastMessageSender, DateTime lastMessageTime)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(chatId))
+                    return;
+
+                var chatPath = GetFirebasePath(FirebaseConfig.ChatsPath, chatId);
+
+                var updates = new Dictionary<string, object>
+                {
+                    { "lastMessage", lastMessage },
+                    { "lastMessageSender", lastMessageSender },
+                    { "lastMessageTime", lastMessageTime.ToString("o") }
+                };
+
+                await _firebaseClient
+                    .Child(chatPath)
+                    .PatchAsync(updates);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating last message for chat {chatId}: {ex.Message}");
+            }
+        }
+
+        // Realtime listeners
         public Task SubscribeToChatMessages(string chatId, Action<Message> onMessageAdded)
         {
             throw new NotImplementedException();
@@ -638,7 +873,7 @@ namespace Messenger.Services
             throw new NotImplementedException();
         }
 
-        // Вспомогательные методы (будут реализованы в следующих коммитах)
+        // Вспомогательные методы
         public Task<List<User>> SearchUsersAsync(string searchQuery)
         {
             throw new NotImplementedException();
